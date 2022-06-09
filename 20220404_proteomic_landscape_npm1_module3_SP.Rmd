@@ -1,0 +1,609 @@
+---
+title: "Proteomic Landscape of NPM1 mutated AML - module 3 - NPM1 subproteome"
+output: html_notebook
+---
+
+
+# NPM1^mut^ Subclustering
+
+```{r}
+phen_data %>% filter(NPM1 == 1 & !is.na(NPM1)) %>% pull(ID) -> npm1_mutated_patients
+```
+
+# COLA - framework for stable sub-partinioning
+
+## Step 1 - Matrix preprocessing
+
+Missing value imputation and filtering on sub-coverage samples/features was already done. Additionally, COLA suggests removing features with 0 and below 5th percentile-variance filtering. Furthermore, outliers are removed by means of imputation values above and below the row-wise 95th, 5th percentile.
+
+Since we've alrady performed most of the steps, I'll manually remove low variance rows
+
+```{r}
+library(cola)
+
+
+adjust_outlier(prot_merge[,npm1_mutated_patients]) -> prot_npm1
+
+# define 5% quantile of row sds
+quantile(matrixStats::rowSds(prot_npm1), 0.05) -> lower_sd_filter
+
+# filter matrix
+prot_npm1[matrixStats::rowSds(prot_npm1) >= lower_sd_filter ,] -> prot_npm1
+```
+
+## Consensus Partitioning
+
+Feature selection for further sub-partinioning can be done in various ways, the most common being variance filtering. However, cola provides several additional features including the ability to correlate to other rows (ATC)-score which tries to identify highly correlated rows/features (similar to consensus scores for samples) with the underlying idea that given true structure in the data set, certain feature groups (with true underlying biology) are more likely to correlate or anti-correlate in their expression profile.
+
+Since version 2.0, cola supports hierarchical partitioning as an additional, meta-framework for the sub-partitioning algorithm. To this end, after identification of major clusters, resulting clusters are again sub-partitioned until an threshold (mean sillhouette score) is met. With this, smaller, sub-clusters can be identified which would otherwise
+
+```{r eval = F}
+doParallel::registerDoParallel(cores = parallel::detectCores() - 1)
+
+phen_data %>% 
+  column_to_rownames("ID") %>%
+  dplyr::select(batch, Age, AMLSTAT, ELN, FLT3) -> npm1_phen
+
+library(NMF)
+
+register_NMF()
+#register_SOM()
+
+hierarchical_partition(prot_npm1,
+                       top_value_method = all_top_value_methods(),
+                       partition_method = all_partition_methods(),
+                       combination_method = expand.grid(all_top_value_methods(), all_partition_methods()),
+                       anno = npm1_phen[colnames(prot_npm1),],
+                       cores = parallel::detectCores() - 1,
+                       # we've already manually filtered by variance
+                       filter_fun = function(mat) {rep(T, nrow(mat))},
+                       # test a maximum of 6 clusters
+                       max_k = 6) -> npm1_hierarchical_partitioning_out
+```
+
+### Exploration
+
+```{r}
+npm1_hierarchical_partitioning_out
+```
+
+```{r}
+collect_classes(npm1_hierarchical_partitioning_out)
+```
+
+```{r}
+node_info(npm1_hierarchical_partitioning_out)
+```
+
+This gives a overview over all sub-partitionings that were performed, the method used for the particular split (best_method), the resulting depth and best k (number of clusters). Signatures are defined as genes/proteins significantly associated with a clustersplit. There's the absolute number of signatures (n_signatures) and the proportion of signatures relative to all genes/proteins (p_signatures).
+
+Best k and ideal number of signatures (this should correlate with "biological information" retained in the split) can be inferred from the node info.
+
+```{r}
+suggest_best_k(npm1_hierarchical_partitioning_out)
+```
+
+From this, the first split (node 0) is best done by kmeans on the ATC-selected top rows which results in 3 leafs. Further splits are suggested to be done by pam and mclust.
+
+Additionally, we can use the number of signatures to guide the hierarchy split. For example, we can merge the nodes in a way that results in a minimum of 3519 signatures/split which happens to be the first ATC:kmeans split
+
+```{r}
+collect_classes(npm1_hierarchical_partitioning_out, merge_node = merge_node_param(min_n_signatures = 3519))
+```
+
+```{r}
+get_signatures(npm1_hierarchical_partitioning_out, merge_node = merge_node_param(min_n_signatures = 3519))
+```
+
+Using the first split, that is ATC:kmeans with k = 3 results in 3 distinct subgroups. While the 1st and the 3rd group seem to have a very distinct pattern, the 2nd groups still seems heterogeneous. Additional splitting of the 2nd group however results in very small subgroups.
+
+```{r}
+collect_classes(npm1_hierarchical_partitioning_out, merge_node = merge_node_param(min_n_signatures = 1837))
+```
+
+```{r}
+get_signatures(npm1_hierarchical_partitioning_out, merge_node = merge_node_param(min_n_signatures = 1837))
+```
+
+We can compare the UMAP projections of the 3519 and the 1837 split
+
+```{r}
+par(mfrow=c(1,2))
+dimension_reduction(npm1_hierarchical_partitioning_out, merge_node = merge_node_param(min_n_signatures = 1837),
+    method = "UMAP", top_value_method = "ATC", top_n = 1000, scale_rows = T)
+dimension_reduction(npm1_hierarchical_partitioning_out, merge_node = merge_node_param(min_n_signatures = 3519),
+    method = "UMAP", top_value_method = "ATC", top_n = 1000, scale_rows = T)
+```
+
+While in either case cluster seperation is not perfect, the 3 way split gives a better separation of classes.
+
+```{r}
+test_to_known_factors(npm1_hierarchical_partitioning_out, merge_node = merge_node_param(min_n_signatures = 3519))
+```
+
+Furthermore we can confirm that the clustering is not biased by the batch since there's no significant association.
+
+### Classic consensus partitioning
+
+We have by using the hierarchical consensus partitioning approach found, that splitting beyond node 0 leaves the resulting sub-clusters too small. Hence we'll stick with a node 0 split. To again compare different node 0 splitting methods, we'll run the classical consensus partitioning.
+
+```{r}
+
+library(NMF)
+library(kohonen)
+
+register_SOM()
+register_NMF()
+
+register_partition_methods(
+    hclust_ward = function(mat, k) cutree(hclust(as.dist(mat), method = "ward.D2"), k),
+    hclust_spearcor_complete = function(mat, k) cutree(hclust(as.dist(1-cor(mat, method = "spearman")), method = "complete"), k),
+    hclust_spearcor_ward = function(mat, k) cutree(hclust(as.dist(1-cor(mat, method = "spearman")), method = "ward.D2"), k)
+)
+
+run_all_consensus_partition_methods(prot_npm1,
+                       top_value_method = all_top_value_methods(),
+                       partition_method = all_partition_methods(),
+                       anno = npm1_phen[colnames(prot_npm1),],
+                       # test a maximum of 6 clusters
+                       max_k = 6) -> npm1_consensus_partitioning_out
+
+npm1_consensus_partitioning_out %>% collect_plots(k = 2)
+
+get_classes(npm1_consensus_partitioning_out["SD:kmeans"], k = 2) %>% 
+  rownames_to_column("ID") %>% 
+  left_join(phen_data) %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(OSTM, OSSTAT) ~ class,. 
+      ),., pval = T
+    )
+  }
+
+get_classes(npm1_consensus_partitioning_out["ATC:skmeans"], k = 3) %>% 
+  rownames_to_column("ID") %>% 
+  left_join(phen_data) %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(OSTM, OSSTAT) ~ class,. 
+      ),., risk.table = T
+    )
+  }
+
+get_signatures(npm1_consensus_partitioning_out["ATC:skmeans"], k = 3)
+
+fe_enrich <- functional_enrichment(npm1_consensus_partitioning_out["ATC:skmeans"], k = 3, id_mapping = id_mapping)
+
+fe_enrich %>% simplifyEnrichment::simplifyGOFromMultipleLists()
+```
+
+```{r eval = F}
+cola_report(npm1_consensus_partitioning_out)
+```
+
+The classical consensus partitioning confirms the combination of ATC with kmeans clustering into 3 subgroups as the method with the best metrics.
+
+```{r}
+suggest_best_k(npm1_consensus_partitioning_out) %>% 
+  as_tibble(rownames = "method", .name_repair = "unique") %>% 
+  filter(`1-PAC` == 1) %>% 
+  arrange(desc(mean_silhouette, concordance))
+```
+
+```{r}
+collect_classes(npm1_consensus_partitioning_out, k = 3)
+```
+
+```{r}
+select_partition_number(npm1_consensus_partitioning_out["ATC:kmeans"])
+```
+
+```{r}
+consensus_heatmap(npm1_consensus_partitioning_out["ATC:kmeans"], k = 3)
+```
+
+### Functional Enrichment of biological terms
+
+```{r}
+collect_plots(npm1_consensus_partitioning_out["ATC:kmeans"])
+```
+
+```{r}
+get_classes(npm1_consensus_partitioning_out["ATC:kmeans"], k = 3) %>% 
+  as_tibble(rownames = "ID") %>% 
+  left_join(phen_data) %>% 
+  mutate(mito = factor(class == 3)) %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(OSTM, OSSTAT) ~ class, . 
+      ), ., pval = T, risk.table = T
+    )
+  } 
+```
+
+```{r}
+
+```
+
+### Enrichment
+
+The 3 way split is now used to run an enrichment analysis which is also implemented in cola. For this, we need to provide a mapping from the uniprot to entrez ids.
+
+```{r}
+head(rownames(npm1_hierarchical_partitioning_out))
+```
+
+```{r}
+
+biomaRt::getBM(attributes = c("uniprotswissprot", "entrezgene_id"), 
+               filter = c("uniprotswissprot"), 
+               mart = biomaRt::useMart("ensembl","hsapiens_gene_ensembl"), 
+               values = rownames(npm1_hierarchical_partitioning_out)) -> id_mapping
+
+id_mapping %>% deframe()  -> id_mapping
+```
+
+```{r}
+enrichment_bp_consensus_partitioning <- 
+  functional_enrichment(npm1_consensus_partitioning_out["ATC:kmeans"], k = 3, 
+                            id_mapping = id_mapping, 
+                            #ontology = "BP", 
+                            universe = as.character(unique(id_mapping)))
+
+enrichment_bp_consensus_partitioning %>% simplifyEnrichment::simplifyGOFromMultipleLists()
+```
+
+### sidekick - consensus partitioning of the entire proteome
+
+```{r}
+
+hierarchical_partition(prot_matrix_cmerge_combat,
+                       top_value_method = all_top_value_methods(),
+                       partition_method = all_partition_methods(),
+                       combination_method = expand.grid(all_top_value_methods(), all_partition_methods()),
+                       anno = phen_data %>% dplyr::select(batch, Age, AMLSTAT, ELN, FLT3) %>% as.data.frame(),
+                       cores = parallel::detectCores() - 1,
+                       # test a maximum of 6 clusters
+                       max_k = 6) -> hierarchical_consensus_partitioning_out
+
+```
+
+# M3C
+
+Different from COLA/ConsensusClustering, M3C uses a more stringent testing of the null hypothesis (k=1). Details can be found here https://www.nature.com/articles/s41598-020-58766-1#Sec2. The method was developed due to the assumption that the stabiliy criterion introduced by Monti et al. in the ConsensusClusterPlus package has a bias towards larger K and high rates of false positives (hence assumes clusters where in fact there're non (e.g. k = 1)). To solve this, John et al. developed Monte Carlo reference-based consensus clustering (M3C), which is based on this algorithm. M3C simulates null distributions of stability scores for a range of K values thus enabling a comparison with real data to remove bias and statistically test for the presence of structure. 
+
+M3C has 3 main clustering algorithms (kmeans, pam, hc) and spectral clustering (for more unusual cluster structures (i.e. not spherical)). Additional prerequesits (log2 transformation, removal of low/zero-variance features, batch-effect correction) have already been done. 
+
+The input matrix is features x sampels. 
+
+
+We first filter for the top 20% most variable features using MAD as a metric and the build-in featurefilter() function
+
+```{r}
+library(M3C)
+
+prot_npm1_m3c <-M3C::featurefilter(prot_merge[, npm1_mutated_patients], percentile = 10)
+
+prot_npm1_m3c <- prot_npm1_m3c$filtered_data
+```
+
+We run a final visualization of the filtered data set prior to the clustering.
+
+```{r}
+M3C::pca(prot_npm1_m3c, text = colnames(prot_npm1_m3c))
+
+```
+
+Hierarchical clustering with Wards-linkage is performed within the M3C framework. 
+
+
+```{r}
+prot_npm1_m3c_clustering <- M3C::M3C(prot_npm1_m3c, 
+                                     cores = parallel::detectCores() - 1, maxK = 10, seed = 069, clusteralg = "hc", method = 1)
+```
+
+
+```{r}
+prot_npm1_m3c_clustering$scores
+```
+
+This reveales k = 2 to be the optimal split. 
+
+An independent consensuscluster run with the same clustering method is performed
+
+```{r}
+library(ConsensusClusterPlus)
+ConsensusClusterPlus(d = prot_npm1_m3c, maxK = 10, innerLinkage = "ward.D", finalLinkage = "ward.D") %>% calcICL()
+
+cluster::silhouette(dist = dist(t(prot_merge[, npm1_mutated_patients])),
+                    x = prot_npm1_m3c_clustering$assignments) %>% plot()
+```
+
+
+
+```{r}
+
+cola::run_all_consensus_partition_methods(data = prot_npm1, 
+                          top_value_method = all_top_value_methods(), 
+                          partition_method = all_partition_methods(), 
+                          max_k = 5,
+                          verbose = T, partition_repeat = 50, cores = parallel::detectCores() - 1) -> cola_all_out
+
+cola_all_out %>% suggest_best_k()
+
+cola_all_out["ATC:skmeans"] %>% get_classes(k = 3) %>% 
+  rownames_to_column("ID") %>% 
+  left_join(phen_data) %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(OSTM, OSSTAT) ~ class, .
+      ), ., pval = T, risk.table = T
+    )
+  }
+
+m3c_mm <- model.matrix(~ 0 + as.factor(get_classes(cola_all_out["ATC:skmeans"], k = 2)$class), data.frame(ID= colnames(prot_npm1_m3c), row.names = colnames(prot_npm1_m3c)))
+
+colnames(m3c_mm) <- c("Class1", "Class2")
+
+m3c_cm <- limma::makeContrasts(Class1 - Class2, levels = m3c_mm)
+
+uniprot_to_entrezid <- clusterProfiler::bitr(
+  geneID = rownames(prot_merge), fromType = "UNIPROT", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+
+uniprot_to_entrezid %>% deframe() -> uniprot_to_entrezid
+
+prot_merge[, npm1_mutated_patients] %>% 
+  lmFit(design = m3c_mm) %>% 
+  contrasts.fit(contrasts = m3c_cm) %>% 
+  eBayes() %>% 
+  topTable(number = Inf) %>% 
+  rownames_to_column("uniprotid") %>% 
+  mutate(uniprotid = uniprot_to_entrezid[uniprotid]) %>%
+  dplyr::select(uniprotid, t) -> m3c_de_vector
+
+geneList <- m3c_de_vector$t
+names(geneList) <- m3c_de_vector$uniprotid
+
+geneList <- sort(geneList, decreasing = T)
+
+
+ReactomePA::gsePathway(geneList = geneList, organism = "human", minGSSize = 10, maxGSSize = Inf, by = "fgsea") -> reactome_out
+
+reactome_out_termsim %>% as_tibble() %>% arrange(desc(NES)) %>% filter(p.adjust <= 0.01) %>% View
+
+reactome_out_termsim <- enrichplot::pairwise_termsim(reactome_out)
+
+filter(reactome_out_termsim,  p.adjust <= 0.001) %>% ReactomePA::emapplot()
+ReactomePA::emapplot(reactome_out_termsim) -> enrichplot
+
+
+prot_merge[, npm1_mutated_patients] %>% 
+  lmFit(design = m3c_mm) %>% 
+  contrasts.fit(contrasts = m3c_cm) %>% 
+  eBayes() %>% 
+  topTable(number = Inf, p.value = 0.01) %>% 
+  rownames_to_column("uniprotid") %>% 
+  mutate(uniprotid = uniprotswissprot_to_hgnc_symbol[uniprotid]) %>% 
+  ggplot(aes(x=logFC, y = -log(adj.P.Val), label = uniprotid)) +
+  geom_point() +
+  cowplot::theme_cowplot() +
+  ggrepel::geom_text_repel() -> p1
+```
+
+
+```{r}
+mert_de_genes <- readxl::read_excel("~/Forschung/AG Oellerich/NPM1 Proteome/Mer et al/Supplementary Data 1.xlsx")
+
+prot_merge[, npm1_mutated_patients] %>% 
+  lmFit(design = m3c_mm) %>% 
+  contrasts.fit(contrasts = m3c_cm) %>% 
+  eBayes() %>% 
+  topTable(number = Inf) %>% 
+  rownames_to_column("uniprotid") %>% 
+  mutate(uniprotid = uniprotswissprot_to_hgnc_symbol[uniprotid]) %>% 
+  dplyr::select(uniprotid, t, adj.P.Val) %>% 
+  left_join(dplyr::select(mert_de_genes, GENENAME, estimate, fdr), by=c("uniprotid" = "GENENAME")) %>% 
+  mutate(estimate = estimate *-1) %>%
+  ggplot(aes(x=t, y = estimate)) +  
+  ggpubr::stat_cor(method = "spearman") + 
+  geom_point(alpha = 0.4) + 
+  stat_smooth(formula = y ~ x) +
+  cowplot::theme_cowplot() +
+  labs(x = "This study", y = "Mert et al.") -> p2
+```
+
+```{r}
+cowplot::plot_grid(p1, p2)
+```
+
+
+```{r}
+
+prot_merge[, npm1_mutated_patients] %>% 
+  lmFit(design = m3c_mm) %>% 
+  contrasts.fit(contrasts = m3c_cm) %>% 
+  eBayes() %>% 
+  topTable(number = Inf, p.value = 0.05) %>% 
+  rownames_to_column("uniprotid") %>% 
+  mutate(uniprotid = uniprot_to_entrezid[uniprotid]) %>%
+  dplyr::select(uniprotid, t) -> m3c_de_vector_enrichment
+
+ReactomePA::enrichPathway(gene = m3c_de_vector_enrichment$uniprotid, organism = "human",pvalueCutoff = 0.05, minGSSize = 10, universe = uniprot_to_entrezid) -> reactome_enrichment
+
+reactome_enrichment %>% enrichplot::pairwise_termsim() %>% ReactomePA::emapplot()
+```
+
+
+
+```{r}
+
+tibble(ID = colnames(prot_npm1_m3c), class = prot_npm1_m3c_clustering$assignments) %>% 
+  left_join(phen_data) %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(OSTM, OSSTAT) ~ class, .
+      ), ., pval = T
+    )
+  }
+
+
+m3c_mm <- model.matrix(~ 0 + as.factor(prot_npm1_m3c_clustering$assignments), data.frame(ID= colnames(prot_npm1_m3c), row.names = colnames(prot_npm1_m3c)))
+
+colnames(m3c_mm) <- c("Class1", "Class2")
+
+m3c_cm <- limma::makeContrasts(Class2 - Class1, levels = m3c_mm)
+
+uniprot_to_entrezid <- clusterProfiler::bitr(
+  geneID = rownames(prot_merge), fromType = "UNIPROT", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+
+uniprot_to_entrezid %>% deframe() -> uniprot_to_entrezid
+
+prot_merge[, npm1_mutated_patients] %>% 
+  lmFit(design = m3c_mm) %>% 
+  contrasts.fit(contrasts = m3c_cm) %>% 
+  eBayes() %>% 
+  topTable(number = Inf) %>% 
+  rownames_to_column("uniprotid") %>% 
+  mutate(uniprotid = uniprot_to_entrezid[uniprotid]) %>%
+  dplyr::select(uniprotid, t) -> m3c_de_vector
+
+geneList <- m3c_de_vector$t
+names(geneList) <- m3c_de_vector$uniprotid
+
+geneList <- sort(geneList, decreasing = T)
+
+
+ReactomePA::gsePathway(geneList = geneList, organism = "human", minGSSize = 10, maxGSSize = Inf, by = "fgsea") -> reactome_out
+
+reactome_out %>% as_tibble() %>% arrange(desc(NES)) %>% filter(p.adjust <= 0.01) %>% View
+
+reactome_out_termsim <- enrichplot::pairwise_termsim(reactome_out)
+ReactomePA::emapplot(reactome_out_termsim) -> enrichplot
+```
+
+
+```{r}
+
+```
+
+
+# diceR
+
+DiceR is an alternative consensus cluster package which is in detail described at https://bmcbioinformatics.biomedcentral.com/articles/10.1186/s12859-017-1996-y
+
+Similar to cola or consensusclusterplus it runs multiple clustering iterations with resampling albeit using a slightly different set of methods (including also non parametric ones such as HDBSCAN) and also gives an ensemble clustering solution. 
+To minimize subjective decisions throughout the clustering, diceR not only re- and ensambles over the space of resamples, algorithms and cluster sizes but also selects the top performing algorithms for inclusion into the final ensamble. 
+
+The algorithm expects a samples x features matrix.
+
+The vignette can be found here https://alinetalhouk.github.io/diceR/articles/overview.html
+
+Unfortunatly, the algorithms used are not automatically updated during the package installation. 
+
+```{r}
+library(diceR)
+library(dbscan)
+library(NMF)
+library(kohonen)
+library(e1071)
+library(mclust)
+library(blockcluster)
+library(kernlab)
+library(cluster)
+library(apcluster)
+library(poLCA)
+
+prot_merge[,npm1_mutated_patients] %>% t() -> prot_npm1_diceR
+
+prot_merge[,npm1_mutated_patients] %>% matrixStats::rowMads() %>% quantile(0.50) -> minMAD
+
+algs <- c("nmf", "hc", "diana", "km", "pam", "ap", "sc", "gmm", "block", "som", "cmeans", "hdbscan")
+cons_funs <- c("kmodes", "majority", "CSPA", "LCA")
+
+
+consensus_cluster(data = prot_npm1_diceR,
+     nk = 2:5, # evaluate max k = 5
+    reps = 10, # 50 resamples each algorithm
+    algorithms = c("nmf", "hc", "diana", "km", "pam", "ap", "sc", "block", "cmeans", "hdbscan"), # algorithms to test
+    hc.method = "ward.D2", # hc linking method
+    min.var = minMAD, # minimum MAD to keep samples, the mean MAD for the data set
+    type = "robust", 
+    seed = 069,
+    progress = T,
+    seed.data = 069
+    ) -> npm1_diceR_out
+
+consensus_cluster(data = prot_npm1_diceR, algorithms = c("som"), nk = 2, reps = 5, xdim = 5, ydim =5, rlen = 1)
+```
+
+
+# Differential protein expression between NPM1^mut^ subclusters
+
+### Sub-cluster 1
+
+```{r}
+library(limma)
+
+get_classes(npm1_consensus_partitioning_out["ATC:kmeans"], k = 3) %>% 
+  as_tibble(rownames = "ID") %>% 
+  pivot_wider(names_from = class, values_from = class, names_prefix = "class_") %>% 
+  mutate(across(starts_with("class"), ~ ifelse(is.na(.), 0, 1))) -> npm1_class_vector
+```
+
+```{r}
+npm1_class1_modelmatrix <- model.matrix(~ 0 + as.factor(npm1_class_vector$class_1), npm1_class_vector)
+colnames(npm1_class1_modelmatrix) <- c("comparison","class1")
+
+npm1_class1_contrastmatrix <- limma::makeContrasts(class1 - comparison, levels = npm1_class1_modelmatrix)
+
+prot_npm1 %>% 
+  lmFit(npm1_class1_modelmatrix) %>% 
+  contrasts.fit(npm1_class1_contrastmatrix) %>% 
+  eBayes() %>% 
+  topTable(number = Inf, p.value = 0.01) %>% 
+  as_tibble(rownames="uniprotswissprot") %>% 
+  filter(logFC > 0) %>% arrange(desc(t)) %>% head(100) %>%  pull(uniprotswissprot) %>% clipr::write_clip()
+```
+
+### Sub-cluster 2
+
+```{r}
+npm1_class2_modelmatrix <- model.matrix(~ 0 + as.factor(npm1_class_vector$class_2), npm1_class_vector)
+colnames(npm1_class2_modelmatrix) <- c("comparison","class2")
+
+npm1_class2_contrastmatrix <- limma::makeContrasts(class2 - comparison, levels = npm1_class2_modelmatrix)
+
+prot_npm1 %>% 
+  lmFit(npm1_class2_modelmatrix) %>% 
+  contrasts.fit(npm1_class2_contrastmatrix) %>% 
+  eBayes() %>% 
+  topTable(number = Inf, p.value = 0.01) %>% 
+  as_tibble(rownames="uniprotswissprot") %>% 
+  filter(logFC > 0) %>% arrange(desc(t)) %>% head(100) %>%  pull(uniprotswissprot) %>% clipr::write_clip()
+```
+
+### Sub-cluster 3
+
+```{r}
+npm1_class3_modelmatrix <- model.matrix(~ 0 + as.factor(npm1_class_vector$class_3), npm1_class_vector)
+colnames(npm1_class3_modelmatrix) <- c("comparison","class3")
+
+npm1_class3_contrastmatrix <- limma::makeContrasts(class3 - comparison, levels = npm1_class3_modelmatrix)
+
+prot_npm1 %>% 
+  lmFit(npm1_class3_modelmatrix) %>% 
+  contrasts.fit(npm1_class3_contrastmatrix) %>% 
+  eBayes() %>% 
+  topTable(number = Inf, p.value = 0.01) %>% 
+  as_tibble(rownames="uniprotswissprot") %>% 
+  filter(logFC > 0) %>% arrange(desc(t)) %>% head(100) %>% pull(uniprotswissprot) %>% clipr::write_clip()
+```
+
+
+
+

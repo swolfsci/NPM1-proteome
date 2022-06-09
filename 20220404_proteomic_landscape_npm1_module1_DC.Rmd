@@ -1,0 +1,51 @@
+---
+title: "Proteomic Landscape of NPM1 mutated AML - module 1 - data carpentry"
+output: github_output
+---
+
+# Introduction
+
+Given it's the largest molecular subgroup, molecular elucidation of NPM1^mut^ AML from the large proteomics dataset is warranted. To this end, I'll aim to give a detailed exploration of the proteomic landscape of NPM1^mut^ AML i) in comparison to the NPM^wt^ AML as well as ii) within the NPM1^mut^ group of leukemias.
+
+Pathological background:
+
+# Prerequisits
+
+```{r}
+library(tidyverse)
+```
+
+# Clinical Data and describtion of cohorts
+
+Two different cohorts, AML Mito/FFM (*n* = 177) and SAL (*n* = 100) of untreated, newly diagnosed AML patients. Proteomics was done by means of label-free quantification with data indepentend acquisition (DIA) in two different batches (all AML Mito samples, all SAL samples).
+
+```{r}
+phen_data_lfq <- readxl::read_excel("~/Forschung/AG Oellerich/Datensätze/FFM_Discovery_Cohort/FFM_AML_Discovery_Cohort.xlsx")
+phen_data_sal <- readxl::read_excel("~/Forschung/AG Oellerich/Datensätze/SALII_Cohort/KlinischeDaten_Kohorte_FFM_20220422.xlsx")
+```
+
+# Datasets
+
+We'll work with the main LFQ dataset (n = ~ 177 pts) as well as with the SALII-revision dataset (n = 100 pts).
+
+Pre-processing for the lfq was done as described in <https://github.com/jenssle/AG_Oellerich_ProtGen/blob/main/Proteomic_data_processing/20220306_lfq_proteome_normalization_cleanup.md>
+
+and data merge and imputation in
+
+<https://github.com/jenssle/AG_Oellerich_ProtGen/blob/main/Proteomic_data_processing/20220413_lfq_proteome_merge/20221413_lfq_proteome_preprocess_merge_impute.Rmd>
+
+Briefly, samples with <30% coverage and proteins with >50% missingness were removed as were samples with obviously skewed distribution via visual inspection (4 AML, 1 CD34 sample removed). 
+
+Notably, the data set also includes proteomics of sorted CD34 HSCs from 12 healthy donors (initially 13, 1 failed QC)
+
+There're several protein/gene IDs to use as identifiers.
+
+PG.Genes and PG.UniProtIds have approx. 350 NAs, the majority of which are NA in both PG.Genes and PG.UniProtIds. However, they all have a PG.ProteinAccession which can be used and which, in case of proteins with a PG.UniProtId, matches this. Furthermore, in cases where PG.UniProtIds is disambiguous (i.e. two ids separated by ;), both are disambiguous.
+
+Imputation was done on the cluster using the DreamAI framework
+
+```{r}
+prot_merge <- readRDS("~/Forschung/AG Oellerich/Datensätze/Proteomics Merge/AML_Mito_SAL_Merge_DreamAI_imputed.RDS")
+```
+
+

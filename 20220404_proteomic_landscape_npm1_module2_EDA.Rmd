@@ -1,0 +1,620 @@
+---
+title: "Proteomic Landscape of NPM1 mutated AML - module 2 - EDA"
+output: html_notebook
+---
+
+While in the previous module (module 1) we have done the necessary data carpentry, this module (#2) is dedicated to an initial EDA and describtion of the data set and the clinical cohort. 
+
+
+## Linear Dimensionality Reduction
+
+### PC1 vs. PC2
+
+```{r}
+prot_merge %>% 
+  t() %>% 
+  pcaMethods::pca() %>% 
+  pcaMethods::scores() %>% 
+  as_tibble(rownames = "ID") %>% 
+  left_join(phen_data) %>% 
+  ggplot(aes(x=PC1, y=PC2, col = factor(NPM1, levels=c(1,0), labels=c("NPM1mut", "NPM1wt")))) +
+  geom_point() +
+  cowplot::theme_cowplot() +
+  labs(title = "PC Plot, NPM1 mutations status", caption = Sys.Date(), x = "PC1 var explained 10%", y = "PC2 var explained 9%") +
+  scale_color_manual(name = "NPM1 mutation status", values = c("#fb8500","#8ecae6"))
+```
+
+We next investigate whether any of the first 10 PCs is significantly correlated with NPM1 mutation status. If this was the case, we could maybe gain additional biological insights from this.
+
+### Logit PC and NPM1 mutation status
+
+For this, we calculate the first 10 PCs. For each PC, we fit a logistic regression model predicting NPM1 mutation status from PC scores. We then filter for models where the PC is a significant covariate after correcting for multiple testing. Models with FDR <= 1% are retained.
+ 
+```{r}
+prot_merge %>% 
+  t() %>% 
+  pcaMethods::pca(nPcs = 10) %>% 
+  pcaMethods::scores() %>% 
+  as_tibble(rownames = "ID") %>% 
+  left_join(phen_data) %>%
+  summarize(across(.cols = PC1:PC10, ~ broom::tidy(glm(NPM1 ~ ., family = "binomial")))) %>% 
+  pivot_longer(cols = everything(), names_to = "PC", values_to = "model") %>% unnest() %>% 
+  filter(term != "(Intercept)") %>% 
+  mutate(p.value = p.adjust(p.value)) %>% 
+  filter(p.value <= 0.01)
+```
+
+
+
+The significant PC dimensions are plotted against PC1 
+
+```{r}
+prot_merge %>% 
+  t() %>% 
+  pcaMethods::pca(nPcs = 10) %>% 
+  pcaMethods::scores() %>% 
+  as_tibble(rownames = "ID") %>% 
+  left_join(phen_data) %>% 
+  dplyr::select(ID, NPM1, PC1, PC3, PC8) %>% 
+  pivot_longer(cols = c(PC3, PC8), names_to = "PC", values_to = "score") %>% 
+  filter(!is.na(NPM1)) %>% 
+  mutate(NPM1 = factor(NPM1, levels=c(0,1), labels=c("WT", "Mut"))) %>% 
+  ggplot(aes(x=PC1, y = score, col = NPM1, fill = NPM1, label = ID)) +
+  geom_point() + 
+  facet_wrap(. ~ PC, scale = "free_y") + 
+  cowplot::theme_cowplot() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  stat_ellipse(type = "t", geom = "polygon", alpha = 0.1) +
+  labs(title = "PC scores vs. NPM1 mutation status", caption = "PCs 3 and 8 have significant logit association with NPM1 mutation status", x = "PC1 score", y = "PC score") +
+  scale_color_manual(name = "NPM1 mutation status", values = c("#fb8500","#8ecae6")) +
+  scale_fill_manual(name = "NPM1 mutation status", values = c("#fb8500","#8ecae6")) -> PC_NPM1_correlation
+
+
+ggsave(PC_NPM1_correlation, filename = "PC_NPM1_correlation.png", device = "png", dpi = 300, width = 7, height = 4)
+```
+
+PC plot for PC3 vs. PC8
+
+
+```{r}
+prot_merge %>% 
+  t() %>% 
+  pcaMethods::pca(nPcs = 10) %>% 
+  pcaMethods::scores() %>% 
+  as_tibble(rownames = "ID") %>% 
+  left_join(phen_data) %>% 
+  filter(!is.na(NPM1)) %>% 
+  mutate(NPM1 = factor(NPM1, levels=c(0,1), labels=c("WT", "Mut"))) %>% 
+  ggplot(aes(x=PC3, y = PC8, col = NPM1, fill = NPM1, label = ID)) +
+  geom_point() + 
+  #facet_wrap(. ~ PC, scale = "free_y") + 
+  cowplot::theme_cowplot() +
+  #geom_hline(yintercept = 0, linetype = "dashed") +
+  stat_ellipse(type = "t", geom = "polygon", alpha = 0.1) +
+  labs(title = "PC3 vs PC8 vs. NPM1 mutation status", 
+       caption = "PC3 and PC8 appear to delineate well between NPM1 mutant and wild type patients", x = "PC3 score", y = "PC8 score") +
+  scale_color_manual(name = "NPM1 mutation status", values = c("#fb8500","#8ecae6")) +
+  scale_fill_manual(name = "NPM1 mutation status", values = c("#fb8500","#8ecae6")) -> PC3_PC8_NPM1
+
+ggsave(PC3_PC8_NPM1, filename = "PC3_PC8_NPM1.png", width = 6.5, height = 5, dpi = 300)
+```
+
+A logistic regression model including PCs 3 and 8 has high predictive power for NPM1 mutation status 
+
+```{r}
+prot_merge %>% 
+  t() %>% 
+  pcaMethods::pca(nPcs = 10) %>% 
+  pcaMethods::scores() %>% 
+  as_tibble(rownames = "ID") %>% 
+  left_join(phen_data) %>% 
+  filter(!is.na(NPM1)) %>% 
+  mutate(NPM1 = factor(NPM1, levels=c(0,1), labels=c("WT", "Mut"))) %>% 
+  {
+    glm(NPM1 ~ PC3 + PC8, family = "binomial", data = .)
+  } %>% summary()
+```
+
+```{r}
+pchisq(q = 335 - 200, df = 2, lower.tail = F)
+```
+
+We can calculate the pseudo R^2 as described in https://thestatsgeek.com/2014/02/08/r-squared-in-logistic-regression/
+
+```{r}
+prot_merge %>% 
+  t() %>% 
+  pcaMethods::pca(nPcs = 10) %>% 
+  pcaMethods::scores() %>% 
+  as_tibble(rownames = "ID") %>% 
+  left_join(phen_data) %>% 
+  filter(!is.na(NPM1)) %>% 
+  mutate(NPM1 = factor(NPM1, levels=c(0,1), labels=c("WT", "Mut"))) %>% 
+  {
+    glm(NPM1 ~ PC3 + PC8, family = "binomial", data = .)
+  } -> fullmod
+
+prot_merge %>% 
+  t() %>% 
+  pcaMethods::pca(nPcs = 10) %>% 
+  pcaMethods::scores() %>% 
+  as_tibble(rownames = "ID") %>% 
+  left_join(phen_data) %>% 
+  filter(!is.na(NPM1)) %>% 
+  mutate(NPM1 = factor(NPM1, levels=c(0,1), labels=c("WT", "Mut"))) %>% 
+  {
+    glm(NPM1 ~ 1, family = "binomial", data = .)
+  } -> nullmod
+
+1-logLik(fullmod)/logLik(nullmod)
+```
+
+### Enrichment analysis of PCs 3 and 8
+
+PC loadings imply information about the underlying biological structure. However, PC scores themself can not be directly interpreted. To address this gap, Frost et al. have developed principal component gene set enrichment (PCGSE), an approach for interpreting the PCs of genomic data via two-stage competitive gene set testing in which the correlation between each gene and each PC is used as a gene-level statistic with flexible choice of both the gene set test statistic and the method used to compute the null distribution of the gene set statistic
+
+PCGSE needs a matrix format for the enrichment categories with a fxp matrix where the rows, f, are GO categories, the columns, p, are genes/proteins and each element ai,h holds an binary indicator variable whether an annotation exists between the catagory and the gene/protein. 
+
+We first need to construct this matrix from the GO categories where every row is a term, every column a gene/protein and every element indicates an association
+
+```{r}
+msigdbr::msigdbr(category = "C5") -> msigdbr_c5
+
+msigdbr_c5 %>% 
+  pivot_wider(id_cols = gs_name, names_from = human_gene_symbol, values_from = human_gene_symbol, values_fn = is.character) %>% 
+  mutate(across(.cols = -gs_name, ~ !is.na(.)),
+         across(.cols = -gs_name, ~ as.numeric(.))) %>%
+  column_to_rownames("gs_name") %>% 
+  as.matrix() -> msigdbr_c5_matrix
+```
+
+After translation of the PG.Accessions to gene names (which implies aggregating duplicated rownames via median) we can use the matrix to look for C5 GO term enrichments of PCs 3 and 8. Notably, the matrix must only include genes which are found in the dataset.
+
+```{r}
+prot_merge %>% 
+  as_tibble(rownames = "uniprotid") %>% 
+  mutate(uniprotid = uniprotswissprot_to_hgnc_symbol[uniprotid]) %>% 
+  filter(!is.na(uniprotid) & uniprotid != "") %>% 
+  group_by(uniprotid) %>% 
+  summarize(across(.cols = everything(), ~ median(.))) %>% 
+  column_to_rownames("uniprotid") -> prot_merge_hgnc
+```
+
+
+```{r}
+intersect_genes <- intersect(rownames(prot_merge_hgnc), colnames(msigdbr_c5_matrix))
+
+t(prot_merge_hgnc[intersect_genes, ]) %>% 
+  prcomp() -> prot_merge_hgnc.prcomp
+
+
+PCGSE::pcgse(data = t(prot_merge_hgnc[intersect_genes, ]),
+             prcomp.output = prot_merge_hgnc.prcomp,
+             pc.indexes = c(3,8), 
+             gene.sets = msigdbr_c5_matrix[
+               matrixStats::rowSums2(msigdbr_c5_matrix[,intersect_genes]) >= 5,intersect_genes],gene.statistic = "loading") -> pc3_pc8_pcgse_goc5_loadings
+
+
+```
+
+ToDos from here:
+confirm that prcomp PCs 3 and 8 equal pcMethods PCs 3 and 8
+inspect enrichments
+
+
+NPM1^mut^ disease is scattered over the plot w/o a clear pattern.
+
+## Non-linear UMAP
+
+```{r}
+library(umap)
+
+prot_merge %>% 
+  t() %>% 
+  umap() -> prot_merge_umap
+
+prot_merge_umap$layout %>% 
+  as_tibble(rownames = "ID") %>% 
+  rename("UMAP1" = "V1", "UMAP2" = "V2") %>% 
+  left_join(phen_data) %>% 
+  ggplot(aes(x=UMAP1, y=UMAP2, col = factor(NPM1, levels=c(1,0), labels=c("NPM1mut","NPM1wt")))) +
+  geom_point() +
+  cowplot::theme_cowplot() +
+  labs(title = "UMAP Plot, NPM1 mutations status", caption = Sys.Date()) +
+  scale_color_manual(name = "NPM1 mutation status", values = c("#fb8500", "#8ecae6"))
+```
+
+
+```{r}
+prot_merge %>% 
+  t() %>% 
+  umap::umap(n_components = 10) -> prot_merge_umap
+
+prot_merge_umap$layout %>% 
+  as_tibble(rownames = "ID") %>% 
+  rename_with(.cols = starts_with("V"), .fn = function(n) paste0("UMAP_",n)) %>% 
+  left_join(phen_data) %>% 
+  summarize(across(.cols = UMAP_V1:UMAP_V10, ~ broom::tidy(glm(NPM1 ~ ., family = "binomial")))) %>% 
+  pivot_longer(cols = everything(), names_to = "UMAP", values_to = "model") %>% unnest() %>% 
+  filter(term != "(Intercept)") %>% 
+  arrange(p.value) %>% 
+  filter(p.value <= 0.05) %>% 
+  pull(UMAP) -> sig_UMAP
+```
+
+
+
+```{r}
+prot_merge_umap$layout %>% 
+  as_tibble(rownames = "ID") %>% 
+  rename_with(.cols = starts_with("V"), .fn = function(n) paste0("UMAP_",n)) %>% 
+  left_join(phen_data)  %>% 
+  dplyr::select(ID, NPM1, UMAP_V1, all_of(sig_UMAP)) %>% 
+  pivot_longer(cols = all_of(sig_UMAP), names_to = "UMAP", values_to = "score") %>% 
+  filter(!is.na(NPM1)) %>% 
+  mutate(NPM1 = factor(NPM1, levels=c(0,1), labels=c("WT", "Mut"))) %>% 
+  ggplot(aes(x=NPM1, y = score, fill = NPM1, label = ID)) +
+  geom_boxplot() + 
+  facet_wrap(. ~ UMAP, scale = "free_y") + 
+  cowplot::theme_cowplot() +
+  #geom_hline(yintercept = 0, linetype = "dashed") +
+  #stat_ellipse(type = "t", geom = "polygon", alpha = 0.1) +
+  labs(title = "PC scores vs. NPM1 mutation status", caption = "PCs 3, 4 and 8 have significant logit association with NPM1 mutation status", x = "PC1 score", y = "PC score") +
+  scale_color_manual(name = "NPM1 mutation status", values = c("#fb8500","#8ecae6")) +
+  scale_fill_manual(name = "NPM1 mutation status", values = c("#fb8500","#8ecae6")) +
+  theme(axis.text.x = element_blank()) +
+  ggpubr::stat_compare_means(comparisons = list(c("WT", "Mut"))) -> NPM1_UMAP_comparison
+```
+
+
+## NPM^mut^ (dis)similarity
+
+Building a distance matrix based on the top 1000 most variant proteins 
+
+(we add predicted Mito from Florians classifier)
+
+```{r}
+pred_mito <- read_csv("Florian XGB Classifier/pred_mito_0522.csv", col_names = c("ID", "pMito"))
+
+tibble(ID = colnames(prot_merge)) %>% 
+  left_join(phen_data) %>% 
+  left_join(pred_mito) %>%
+  dplyr::select(NPM1, FAB, AMLSTAT, FLT3, cohort, pMito, ELN) %>% 
+  mutate(across(.cols = c(NPM1, FLT3), ~ factor(., levels=c(0,1), labels=c("Wt", "Mut"))),
+         predMito = factor(pMito >0.5, levels=c(T,F), labels=c("Mito", "nonMito"))) %>%
+  dplyr::select(-pMito) %>% 
+  as.data.frame() %>% 
+  {
+    ComplexHeatmap::HeatmapAnnotation(df = .,col = list(`NPM1` = c("Mut" = "#fb8500", "Wt" = "#8ecae6"),
+                                                        'FAB' = c("M1" = "#ef476f", 
+                                                                  "M2" = "#81b29a",
+                                                                  "M4" = "#118ab2",
+                                                                  "M5" = "#ffd166",
+                                                                  "M6" = "#e7c6ff",
+                                                                  "M4Eo" = "#606c38",
+                                                                  "M7" = "#ecf39e"),
+                                                        'AMLSTAT' = c("de novo" = "#118ab2",
+                                                                      "sAML" = "#f28482",
+                                                                      "tAML" = "#84a59d"),
+                                                        'FLT3' = c("Wt" = "#81b29a",
+                                                                   "Mut" = "#e63946"),
+                                                        "cohort" = c("FFM" = "#e36414",
+                                                                     "SAL" = "#598392"),
+                                                        "predMito" = c("Mito" = "#e63946",
+                                                                       "nonMito" = "#1d3557"),
+                                                        "ELN" = c("fav" = "#588157",
+                                                                  "int" = "#ffb703",
+                                                                  "adv" = "#ae2012")))
+  } -> NPM1_anno
+
+col_map <- circlize::colorRamp2(breaks=c(30,45,60), colors = c("#fb8500","white","#8ecae6"))
+
+prot_merge[order(matrixStats::rowMads(prot_merge), decreasing = T), ] %>% 
+  head(1000) %>% 
+  t() %>% 
+  scale() %>% 
+  dist() %>% 
+  as.matrix() %>% 
+  ComplexHeatmap::Heatmap(col = col_map, 
+                          top_annotation = NPM1_anno, 
+                          show_row_names = F, 
+                          show_column_names = F, 
+                          clustering_method_columns = "complete") %>% 
+  ComplexHeatmap::draw() -> global_proteome_heatmap
+```
+
+
+Again, NPM1^mut^ AML are scattered w/o a distinct pattern.
+
+# NPM1^mut^ DE analysis
+
+## Differential protein expression NPM1^wt^ vs NPM1^mut^
+
+DE proteins are identified using linear models to extract the difference in protein expression between NPM1^mut^ and NPM1^wt^. 
+
+```{r}
+library(limma)
+
+model_matrix_npm1 <- model.matrix(~ 0 + as.factor(NPM1), data = column_to_rownames(phen_data, "ID"))
+
+colnames(model_matrix_npm1) <- c("NPM1wt", "NPM1mut")
+
+model_matrix_npm1_cm <- limma::makeContrasts(NPM1mut - NPM1wt, levels = model_matrix_npm1)
+
+prot_merge[, rownames(model_matrix_npm1)] %>% 
+  lmFit(model_matrix_npm1) %>% 
+  contrasts.fit(model_matrix_npm1_cm) %>% 
+  eBayes() -> npm1_fit
+```
+
+
+```{r}
+npm1_fit %>% topTable(number = Inf) %>% 
+  rownames_to_column("PG.UniProtIds") %>% 
+  dplyr::select(PG.UniProtIds, t) -> npm1_fit_t_scores
+  
+biomaRt::getBM(attributes = c("uniprotswissprot", "hgnc_symbol"), 
+               filters = c("uniprotswissprot"), 
+               mart = biomaRt::useMart("ensembl", "hsapiens_gene_ensembl"), 
+               values = npm1_fit_t_scores$PG.UniProtIds) -> npm1_fit_t_scores_biomart
+```
+
+### All DE proteins
+
+Volcano plot of all DE proteins (FDR <1%); color coded are proteins that were previously described in gene expression experiments
+
+```{r}
+npm1_fit %>% 
+  topTable(adjust.method = "BH", p.value = 0.01, number = Inf) %>% 
+  rownames_to_column("PG.UniProtIds") %>% 
+  left_join(
+    npm1_fit_t_scores_biomart, by=c("PG.UniProtIds" = "uniprotswissprot")
+  ) %>% 
+  mutate(in_consensus = case_when(
+    hgnc_symbol %in% consensus_signature_up_in_npm1 ~ "in_consensus_up",
+    hgnc_symbol %in% consensus_signature_down_in_npm1 ~ "in_consensus_down",
+    TRUE ~ "not_in_consensus"
+  )) %>% 
+  ggplot(aes(x=logFC, y= -log(adj.P.Val), label = hgnc_symbol, col = in_consensus, alpha = in_consensus)) +
+  geom_point(alpha = .7) +
+  cowplot::theme_cowplot() +
+  ggrepel::geom_text_repel() +
+  scale_color_manual(name = "Consensus", values = c("#e85d04", "#3a86ff", "black")) +
+  scale_alpha_manual(values=c(1,1,0.6)) +
+  theme(legend.position = "none") +
+  labs(title = expression("Differentially expressed proteins NPM1"^mut ~ " vs. NPM1"^wt), 
+       caption = expression("DE genes previously published are color coded (blue = consensus up in NPM1"^mut ~", orange = consensus down in NPM1"^mut), x = "logFC", y = "-log(adjusted P)") -> p1
+
+
+```
+
+
+```{r eval = F}
+ggsave(p1, filename = "NPM1 volcano plot.jpeg", device = "jpeg", height = 20, width = 23, unit = "cm")
+```
+
+Filtered to signature-proteins only for better interpretability
+
+```{r}
+npm1_fit %>% 
+  topTable(adjust.method = "BH", p.value = 0.01, number = Inf) %>% 
+  rownames_to_column("PG.UniProtIds") %>% 
+  left_join(
+    npm1_fit_t_scores_biomart, by=c("PG.UniProtIds" = "uniprotswissprot")
+  ) %>% 
+  mutate(in_consensus = case_when(
+    hgnc_symbol %in% consensus_signature_up_in_npm1 ~ "in_consensus_up",
+    hgnc_symbol %in% consensus_signature_down_in_npm1 ~ "in_consensus_down",
+    TRUE ~ "not_in_consensus"
+  )) %>% 
+  filter(in_consensus != "not_in_consensus" & !is.na(hgnc_symbol)) %>% 
+  ggplot(aes(x=logFC, y= -log(adj.P.Val), label = hgnc_symbol, col = in_consensus)) +
+  geom_point(alpha = .7) +
+  cowplot::theme_cowplot() +
+  ggrepel::geom_text_repel(max.overlaps = 50) +
+  scale_color_manual(name = "Consensus", values = c("#e85d04", "#3a86ff", "black")) +
+  scale_alpha_manual(values=c(1,1,0.3)) +
+  theme(legend.position = "none") +
+  labs(title = expression("Consensus proteins with differential expression in NPM1"^mut ~"vs. NPM1"^wt)) -> p2
+```
+
+Fraction of genes from expression data identified in the data set
+
+```{r}
+npm1_fit %>% 
+  topTable(adjust.method = "BH", p.value = 0.01, number = Inf) %>% 
+  rownames_to_column("PG.UniProtIds") %>% 
+  left_join(
+    npm1_fit_t_scores_biomart, by=c("PG.UniProtIds" = "uniprotswissprot")
+  ) %>% 
+  mutate(in_consensus = case_when(
+    hgnc_symbol %in% consensus_signature_up_in_npm1 ~ "in_consensus_up",
+    hgnc_symbol %in% consensus_signature_down_in_npm1 ~ "in_consensus_down",
+    TRUE ~ "not_in_consensus"
+  )) %>% 
+  filter(!is.na(hgnc_symbol)) %>% 
+  filter(in_consensus != "not_in_consensus") %>% 
+  group_by(in_consensus) %>% 
+  summarize(n())
+
+
+sum(consensus_signature_up_in_npm1 %in% uniprotswissprot_to_hgnc_symbol) 
+
+sum(consensus_signature_down_in_npm1 %in% uniprotswissprot_to_hgnc_symbol) 
+
+```
+
+
+
+
+#### Identifiaction of druggable genes/proteins
+
+Filter for signficantly expressed proteins in NPM1^mut^ AML
+
+```{r}
+npm1_fit %>% 
+  topTable(adjust.method = "BH", p.value = 0.01, number = Inf) %>% 
+  rownames_to_column("PG.UniProtIds") %>% 
+  left_join(
+    npm1_fit_t_scores_biomart, by=c("PG.UniProtIds" = "uniprotswissprot")
+  ) %>% 
+  filter(logFC >0 & !is.na(hgnc_symbol)) %>% pull(hgnc_symbol) -> npm1_top_up
+
+rDGIdb::queryDGIdb(npm1_top_up,
+                   geneCategories = "CLINICALLY ACTIONABLE") -> npm1_top_up_DGI
+```
+
+10 of the significantly up-regulated proteins are known drug targets with 3 of them having specific inhibitors (one specific agonist for STING1)
+
+```{r}
+npm1_top_up_DGI %>% rDGIdb::byGene() %>% filter(DistinctDrugCount >0)
+npm1_top_up_DGI %>% rDGIdb::detailedResults() %>% filter(InteractionType != "")
+```
+
+
+### GSEA
+
+
+To gain functional understanding of underlying biology, we'll first run a GSEA on the DE proteins NPM1^mut^ vs NPM1^wt^ and further use the Stringdb resource for a protein network analysis.
+
+```{r}
+library(clusterProfiler)
+
+npm1_fit %>% 
+  topTable(number = Inf) %>% 
+  rownames_to_column("PG.UniProtIds") %>% 
+  left_join(
+    npm1_fit_t_scores_biomart, by=c("PG.UniProtIds" = "uniprotswissprot")
+  ) %>% 
+  filter(!is.na(hgnc_symbol)) %>% 
+  dplyr::select(hgnc_symbol, t) %>% 
+  deframe() %>% 
+  sort(decreasing = T) -> npm1_vector
+
+npm1_vector %>% 
+  gseGO(OrgDb = org.Hs.eg.db, 
+           keyType = "SYMBOL", 
+           pAdjustMethod = "BH", 
+           ont = "BP", 
+           pvalueCutoff = 0.05,
+           minGSSize = 10, 
+           maxGSSize = Inf) -> gse_bp
+
+npm1_vector %>% 
+  gseGO(OrgDb = org.Hs.eg.db, 
+           keyType = "SYMBOL", 
+           pAdjustMethod = "BH", 
+           ont = "CC", 
+           pvalueCutoff = 0.05,
+           minGSSize = 10, 
+           maxGSSize = Inf) -> gse_cc
+
+
+
+```
+
+#### GOBP
+
+```{r}
+library(simplifyEnrichment)
+library(enrichplot)
+
+pairwise_termsim(gse_bp) -> gse_bp_sim
+
+gse_bp_sim %>% 
+  group_by(sign(NES)) %>% 
+  slice(1:10) %>% as_tibble() %>% 
+  ggplot(aes(x=forcats::fct_reorder(Description, NES), y = NES)) + coord_flip() +
+  geom_col() +
+  cowplot::theme_cowplot() +
+  labs(x="")
+
+```
+
+Mitochondrial terms are highly enriched in NPM1^mut^ AML. However, much more prominent are down-regulated pathways. 
+
+```{r}
+emapplot(gse_bp_sim)
+```
+
+#### GOCC
+
+```{r}
+pairwise_termsim(gse_cc) -> gse_cc_sim
+
+gse_cc_sim %>% 
+  group_by(sign(NES)) %>% 
+  slice(1:10) %>% as_tibble() %>% 
+  ggplot(aes(x=forcats::fct_reorder(Description, NES), y = NES)) + coord_flip() +
+  geom_col() +
+  cowplot::theme_cowplot() +
+  labs(x="")
+```
+
+```{r}
+emapplot(gse_cc_sim)
+```
+
+#### REACTOME
+
+gsePathway works with EntrezID, so we first need to map uniprot to entrez using bitr/biomaRt. 
+
+```{r}
+library(ReactomePA)
+
+npm1_fit %>% 
+  topTable(number = Inf) %>% 
+  rownames_to_column("PG.UniProtIds") %>% 
+  left_join(
+    npm1_fit_t_scores_biomart, by=c("PG.UniProtIds" = "uniprotswissprot")
+  ) %>% 
+  dplyr::select(PG.UniProtIds, t) -> npm1_vec_entrez
+
+bitr(npm1_vec_entrez$PG.UniProtIds, fromType = "UNIPROT", toType = "ENTREZID", OrgDb = org.Hs.eg.db, drop = F) %>% 
+  distinct(UNIPROT, .keep_all = T) -> uniprot_to_entrez
+
+npm1_vec_entrez %>% 
+  left_join(
+    uniprot_to_entrez, by=c("PG.UniProtIds" = "UNIPROT")
+  ) %>% dplyr::select(ENTREZID, t) %>% deframe() -> npm1_vector_entrez
+
+
+gsePathway(sort(npm1_vector_entrez, decreasing = T)) -> gse_reactome
+```
+
+
+```{r}
+pairwise_termsim(gse_reactome) -> gse_reactome_sim
+
+gse_reactome_sim %>% 
+  group_by(sign(NES)) %>% 
+  slice(1:10) %>% as_tibble() %>% 
+  ggplot(aes(x=forcats::fct_reorder(Description, NES), y = NES)) + coord_flip() +
+  geom_col() +
+  cowplot::theme_cowplot() +
+  labs(x="")
+```
+
+
+## ML-based NPM1 prediction and signature
+
+Using a gradient boosted decision tree-based classifier (xgboost) we predict NPM1^mut^ vs. NPM1^wt^. To this end, a classifier is trained on the proteome in a 10fold nested cv and variable importance is extracted. Variables that appear in at least 5 of the 10 inner folds of the classifier are considered important features and are extracted.
+
+```{r}
+npm1_pred_vi <- read_csv("~/Forschung/AG Oellerich/NPM1 Proteome/signature_sampling_norm.csv", col_names = c("uniprotid", "count"), skip = 1)
+
+clusterProfiler::bitr(npm1_pred_vi$uniprotid, fromType = "UNIPROT", toType = "SYMBOL", OrgDb = org.Hs.eg.db, drop = F) %>% 
+  left_join(npm1_pred_vi, by=c("UNIPROT" = "uniprotid")) -> npm1_pred_vi
+
+
+```
+
+Combining vi with the lm fit to identify which proteins are up- or down-regulated
+
+```{r}
+npm1_pred_vi %>% 
+  left_join(
+    topTable(npm1_fit, number = Inf) %>% as_tibble(rownames = "UNIPROT")
+  ) %>% ggplot(aes(x=logFC, y = -log(adj.P.Val), label = SYMBOL)) + geom_point() + ggrepel::geom_text_repel()
+```
+

@@ -1,0 +1,828 @@
+---
+title: "Proteomic Landscape of NPM1 mutated AML - module 4 - clinical cohort"
+output: html_notebook
+---
+We have two distinct cohorts with two distinct data sets of clinical annotation. The AML Mito/FFM data set has an extensive documentation curated in house while the SAL data set was retrieved from the study alliance leukemia in Dresden, Germany.
+
+All patients were treated with intensive induction chemotherapy with curative intention. 
+
+Ideally, the majority of clinical features would be shared between those two data sets. 
+
+Besides basic patient characteristics ther're an extensive list of laboratory, molecular and genetic 
+
+First, there's three different features for cytogenetic risk classification, CGSTUD, CGELN, ELNRisk. 
+
+```{r}
+phen_data_sal %>% 
+  dplyr::select(CGSTUD, CGELN, ELNRisk) %>% 
+  ComplexHeatmap::Heatmap()
+```
+
+Notably, while CGSTUD and CGELN are very similar, there's considerable descrepancy between the former two and ELNRisk with a strong bias towards favorable risk in ELNRisk. 
+
+
+First, we'll look at the survival pattern based on the thee different classifications to get an idea as to what is most representative.
+
+Several of the numeric variables are stored as character strings with "," instead of "."
+
+```{r}
+phen_data_sal %>% 
+  mutate(across(.cols = c(WBC, HB, PLT, LDH, BMB, PBB, CD34, D16BMB, OSTM, EFSTM, RFSTM, FLT3R), ~
+                  stringr::str_replace(
+                    string = ., 
+                    pattern = ",",
+                    replacement = "."
+                  ) %>% as.numeric())) -> phen_data_sal
+```
+
+
+
+```{r}
+library(survival)
+library(survminer)
+
+phen_data_sal %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(OSTM, OSSTAT) ~ ELNRisk, . 
+      ), . 
+    )
+  }
+```
+
+To get a better understanding, we'll compare discrepant classifications
+
+```{r}
+phen_data_sal %>% 
+  filter(ELNRisk == "fav" & CGELN == "int") #%>% View()
+```
+
+Most of these patients indeed have a NPM1 mutation without FLT3-ITD or FLT3-ITD with low allellic ratio which is per ELN2017 a favorable risk disease. Hence, we'll use ELNRisk for further risk classification. 
+
+```{r}
+phen_data_sal %>% 
+  filter(ELNRisk == "adv" & CGELN %in% c("int", "fav")) #%>% View()
+```
+
+Descrepant adverse risk disease have mostly FLT3-ITD with high allellic ratio without NPM1 or another adverse risk feature (e.g. ASXL1)
+
+# Data carpentry of the molecular features
+
+```{r}
+phen_data_sal %>% dplyr::select(-CGELN, -CGSTUD) -> phen_data_sal
+
+phen_data_sal %>% 
+  dplyr::mutate(across(.cols = (ASXL1 : nAberration), ~ ifelse(. == "NA", NA_character_, .))) %>% 
+  dplyr::mutate(across(.cols = (ASXL1 : nAberration), ~ ifelse(. %in% c("Y", 1), 1, .))) %>% 
+  dplyr::mutate(across(.cols = (ASXL1 : nAberration), ~ ifelse(. %in% c("N", 0), 0, .))) -> phen_data_sal
+```
+
+NPM1 and FLT3-ITD is the only molecular feature with good coverage. 
+
+We'll use this restricted feature set to merge the two clinical data frames and along this process, calculate clinical endpoints such as OS, RFS, PFS and EFS
+
+Additionally, we'll calculate clinical endpoints also censored for allogeneic stem cell transplantation.
+
+Lastly, we set common column names for shared features. 
+
+
+```{r}
+
+phen_data_sal %>% dplyr::select(`Proteomics ID`, AGE, AMLSTAT, ELNRisk, FLT3I, FLT3R, NPM1, OSTM, OSSTAT, EFSTM, EFSSTAT, RFSTM, RFSSTAT, PBB, BMB, WBC, SEX, CGCX, ALSCTDTC, TIDTC, OSDTC, FAB) %>% 
+  rowwise() %>% 
+  rename("ID" = "Proteomics ID",
+         "Age" = "AGE",
+         "ELN" = "ELNRisk",
+         "FLT3" = "FLT3I") %>% 
+  mutate(FLT3VAF = ifelse(FLT3R >= 0.5, "high", "low"),
+         RFSSTAT = ifelse(RFSSTAT == "NA", NA_character_,RFSSTAT),
+         CGCX = ifelse(CGCX == "Y", 1, 0),
+         ALSCT = factor(!is.na(ALSCTDTC), levels=c(T,F), labels=c(1,0)),
+         OST_ALSCT_DTC = min(OSDTC, ALSCTDTC, na.rm = T),
+         OST_ALSCT_STAT = ifelse(OSSTAT == 1 | ALSCT == 1, 1,0),
+         OST_ALSCT_M = lubridate::time_length(OST_ALSCT_DTC - TIDTC, unit = "months")) %>% 
+  mutate(across(.cols = c(FLT3, NPM1 , RFSSTAT, EFSSTAT, OSSTAT), ~ as.numeric(.)))-> phen_data_sal_restr
+
+phen_data_lfq %>% 
+  dplyr::select(ID, `Age_at_1st_diagnosis`, Precursor_fac, NPM1,ELN2017, FLT3, OSM, OS_Status, EFS_Status, EFSM, RFS_Event, RFSM, WBC, Peripheral_Blasts, BM_Blasts, Sex, Complex_Karyotype, alloSZT_Date, `1st_Diagnosis_Date`, OS_Date, Last_FU, `FLT3-ITD Ratio`, FAB) %>% 
+  rowwise() %>% 
+  rename("Age" = "Age_at_1st_diagnosis",
+         "ELN" = "ELN2017",
+         "AMLSTAT" = "Precursor_fac",
+         "OSTM" = "OSM",
+         "OSSTAT" = "OS_Status",
+         "EFSTM" = "EFSM",
+         "EFSSTAT" = "EFS_Status",
+         "RFSSTAT" = "RFS_Event",
+         "RFSTM" = "RFSM",
+         "PBB" = "Peripheral_Blasts",
+         "BMB" = "BM_Blasts",
+         "SEX" = "Sex",
+         "CGCX" = "Complex_Karyotype",
+         "ALSCTDTC" = "alloSZT_Date",
+         "TIDTC" = "1st_Diagnosis_Date",
+         "FLT3R" = "FLT3-ITD Ratio") %>% 
+  mutate(ELN = case_when(
+    ELN == "Intermediate" ~ "int",
+    ELN == "Favorable" ~ "fav",
+    ELN == "Adverse" ~ "adv"
+  )) %>% 
+  mutate(
+    FLT3 = ifelse(FLT3 == "ITD",1,0),
+    NPM1 = ifelse(NPM1 == "Mut", 1,0),
+    SEX = ifelse(SEX == "w", "f", "m"),
+    OSDTC = min(Last_FU, OS_Date, na.rm = T), 
+    CGCX = ifelse(CGCX == 1 & !is.na(CGCX), 1, 0),
+    ALSCT = factor(!is.na(ALSCTDTC), levels=c(T,F), labels=c(1,0)),
+    OST_ALSCT_DTC = 
+      min(OSDTC, ALSCTDTC, na.rm = T),
+    OST_ALSCT_STAT = ifelse(OSSTAT == 1 | ALSCT == 1, 1,0),
+    OST_ALSCT_M = lubridate::time_length(OST_ALSCT_DTC - TIDTC, unit = "months"),
+    FLT3VAF = ifelse(FLT3R >= 0.5, "high", "low")) -> phen_data_lfq_restr
+
+
+bind_rows(phen_data_lfq_restr, phen_data_sal_restr) %>% 
+  mutate(FAB = case_when(
+    FAB %in% c("M1", "M2", "M3", "M4", "M6", "M7") ~ FAB,
+    FAB %in% c("M4Eo", "M4eo") ~ "M4Eo",
+    FAB %in% c("M5a", "M5b", "M5") ~ "M5",
+    TRUE ~ NA_character_
+  )) -> phen_data
+
+tibble(
+  ID = colnames(prot_merge)
+) %>%
+  left_join(phen_data) -> phen_data
+
+phen_data %>% 
+  mutate(cohort = factor(grepl("R", ID), levels=c(T,F), labels=c("SAL", "FFM"))) -> phen_data
+  
+```
+
+
+
+# Clinical cohort
+
+Stratified by cohort
+
+```{r}
+tableone_vars <- c("Age","SEX", "AMLSTAT", "ELN", "WBC",  "PBB", "BMB","CGCX" ,"NPM1",  "FLT3", "FAB")
+
+phen_data %>% 
+  {
+    tableone::CreateTableOne(data = ., vars=tableone_vars, 
+                             factorVars = c("AMLSTAT", "NPM1", "ELN", "FLT3", "CGCX"),
+                             strata = "cohort")
+  } %>% print(quote = T) %>% clipr::write_clip()
+```
+
+Differences in WBC, BMB and PBB but comparable basic patient characteristics and cytogenetic risk. 
+
+Stratified by NPM1
+
+```{r}
+phen_data %>% 
+  {
+    tableone::CreateTableOne(data = ., vars=tableone_vars, 
+                             factorVars = c("AMLSTAT", "NPM1", "ELN", "FLT3", "CGCX", "FAB"),
+                             strata = "NPM1")
+  } %>% print(quote = T) %>% clipr::write_clip()
+```
+
+Co-occurance of NPM1 mutation with FLT3-ITD, normal karyotype, higher bone marrow blast counts and WBC are all well established in the literature and support the validity of the clinical data. https://www.nature.com/articles/leu201730#Sec17
+
+
+
+# Survival data
+
+## Follow up 
+
+Using the reverse Kaplan Meier Estimator the median follow-up time is estimated to be 45.5 months. 
+
+```{r}
+phen_data %>% 
+  mutate(OSSTAT = ifelse(OSSTAT == 1, 0, 1)) %>% 
+  {
+    
+      survfit(
+        Surv(OSTM, OSSTAT) ~ 1,.
+      )
+  } 
+```
+
+## Survival phenotypes
+
+### OS stratified by ELN risk
+
+Compare survival patterns to what is to be expected from the literature. 
+
+```{r}
+library(survival)
+library(survminer)
+
+phen_data %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(OSTM, OSSTAT) ~ ELN,.
+      ),.,
+      pval = T,
+      risk.table = T,
+      palette = "nejm",
+      legend.labs = c("Adv","Fav","Int"),
+      size = 1.5,
+      #fontsize = 7.5,
+      axes.offset = F,
+      ylab = "Overall Survival probability",
+      xlab = "Months",
+      #surv.median.line = "hv",
+      #ggtheme = theme_survminer(font.tickslab =  c(12, "plain","black"))
+    )
+  } -> OS_ELN
+
+png(filename = "OS ELN.png")
+OS_ELN
+dev.off()
+```
+
+### EFS stratified by ELN risk
+
+```{r}
+phen_data %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(EFSTM, EFSSTAT) ~ ELN,.
+      ),.,
+      pval = T,
+      risk.table = T,
+      palette = "nejm",
+      legend.labs = c("Adv","Fav","Int"),
+      size = 1.5,
+      #fontsize = 7.5,
+      axes.offset = F,
+      ylab = "Event free Survival probability",
+      xlab = "Months",
+      #surv.median.line = "hv",
+      #ggtheme = theme_survminer(font.tickslab =  c(12, "plain","black"))
+    )
+  } -> EFS_ELN
+
+png(filename = "EFS ELN.png")
+EFS_ELN
+dev.off()
+```
+
+### RFS stratified by ELN risk
+
+```{r}
+phen_data %>% 
+  filter(cohort == "SAL") %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(RFSTM, RFSSTAT) ~ ELN,.
+      ),.,
+      pval = T,
+      risk.table = T,
+      palette = "nejm",
+      #legend.labs = c("Adv","Fav","Int"),
+      size = 1.5,
+      #fontsize = 7.5,
+      axes.offset = F,
+      ylab = "Relapse free Survival probability",
+      xlab = "Months",
+      #surv.median.line = "hv",
+      #ggtheme = theme_survminer(font.tickslab =  c(12, "plain","black"))
+    )
+  } -> RFS_ELN
+
+png(filename = "RFS ELN.png")
+RFS_ELN
+dev.off()
+```
+This is an unexpected plot. The intermediate and favorable risk curves are overlapping. Notably, for RFS, patients first need to be in first complete remission. Hence all patients that fail CR1 are filtered our. This might explain parts of this phenotype. However, RFS data in this cohort should be used with caution. 
+
+### OS stratified by NPM1 mutation status
+
+```{r}
+phen_data %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(OSTM, OSSTAT) ~ NPM1,.
+      ),.,
+      pval = T,
+      risk.table = T,
+      palette = "nejm",
+      legend.labs = c("Wt", "Mut"),
+      size = 1.5,
+      #fontsize = 7.5,
+      axes.offset = F,
+      ylab = "Overall Survival probability",
+      xlab = "Months",
+      #surv.median.line = "hv",
+      #ggtheme = theme_survminer(font.tickslab =  c(12, "plain","black"))
+    )
+  } -> OS_NPM1
+
+png(filename = "OS NPM1_stratified.png")
+OS_NPM1
+dev.off()
+```
+In our cohort, NPM1 confers no independent survival phenotype. However, this is to be expected since NPM1 itself only confers favorable prognosis in FLT3 wt patients.
+
+#### NPM1 in FLT3 wt patients
+
+```{r}
+phen_data %>% 
+  filter(FLT3 == 0) %>% 
+  mutate(NPM1 = factor(NPM1, levels =c(0,1), labels=c("wt", "mut"))) %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(OSTM, OSSTAT) ~ NPM1,.
+      ),.,
+      pval = T,
+      risk.table = T,
+      palette = "nejm",
+      size = 1.5,
+      #fontsize = 7.5,
+      axes.offset = F,
+      ylab = "Overall Survival probability",
+      xlab = "Months",
+      #surv.median.line = "hv",
+      #ggtheme = theme_survminer(font.tickslab =  c(12, "plain","black"))
+    )
+  } -> OS_FLT3wt_NPM1
+
+png(filename = "OS FLT3wt NPM1_stratified.png")
+OS_FLT3wt_NPM1
+dev.off()
+```
+
+In FLT3 wt patients, mutated NPM1 confers an more favorable prognosis. 
+
+```{r}
+phen_data %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(OSTM, OSSTAT) ~ ELN + NPM1,.
+      ),.,
+      pval = T,
+      risk.table = T,
+      palette = "nejm",
+      size = 1.5,
+      #fontsize = 7.5,
+      axes.offset = F,
+      ylab = "Overall Survival probability",
+      xlab = "Months",
+      #surv.median.line = "hv",
+      #ggtheme = theme_survminer(font.tickslab =  c(12, "plain","black"))
+    )
+  } -> OS_ELN_NPM1
+
+png(filename = "OS NPM1_ELN_stratified.png")
+OS_ELN_NPM1
+dev.off()
+```
+
+Role of NPM1 and FLT3-ITD co-mutation
+
+
+
+```{r}
+phen_data %>% 
+  mutate(across(.cols = c(NPM1, FLT3), ~ factor(., levels=c(0,1), labels=c("WT", "Mut")))) %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(OSTM, OSSTAT) ~ NPM1 + FLT3,.
+      ),.,
+      pval = T,
+      risk.table = T,
+      palette = "nejm",
+      size = 1.5,
+      #fontsize = 7.5,
+      axes.offset = F,
+      ylab = "Overall Survival probability",
+      xlab = "Months",
+      #surv.median.line = "hv",
+      #ggtheme = theme_survminer(font.tickslab =  c(12, "plain","black"))
+    )
+  } -> OS_NPM1_FLT3
+
+## needs censoring for alloTx?
+
+png(filename = "OS NPM1_FLT3_stratified.png")
+OS_NPM1_FLT3
+dev.off()
+
+```
+
+Notably, NPM1 co-mutation doesn't always improve the survival of FLT3-ITD AML. This might be due to the effect of allogeneic stem cell transplantation. Hence we look at OS censored for transplant as well.
+
+```{r}
+phen_data %>% 
+  mutate(across(.cols = c(NPM1, FLT3), ~ factor(., levels=c(0,1), labels=c("WT", "Mut")))) %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(OST_ALSCT_M, OST_ALSCT_STAT) ~ NPM1 + FLT3,.
+      ),.,
+      pval = T,
+      risk.table = T,
+      palette = "nejm",
+      size = 1.5,
+      #fontsize = 7.5,
+      axes.offset = F,
+      ylab = "Overall Survival probability",
+      xlab = "Months",
+      #surv.median.line = "hv",
+      #ggtheme = theme_survminer(font.tickslab =  c(12, "plain","black"))
+    )
+  } -> OS_NPM1_FLT3
+```
+
+And also stratify by FLT3-ITD VAF
+
+```{r}
+phen_data %>% 
+  mutate(across(.cols = c(NPM1, FLT3), ~ factor(., levels=c(0,1), labels=c("WT", "Mut"))),
+         group = case_when(
+           FLT3 == "WT" & NPM1 == "WT" ~ "FLT3^(wt)/NPM1^(wt)",
+           FLT3 == "WT" & NPM1 == "Mut" ~ "FLT3^(wt)/NPM1^(mut)",
+           FLT3 == "Mut" & NPM1 == "WT" & FLT3VAF == "low" ~ "FLT3^(mut)/FLT3VAF^(low)/NPM1^(wt)",
+           FLT3 == "Mut" & NPM1 == "WT" & FLT3VAF == "high" ~ "FLT3^(mut)/FLT3VAF^(high)/NPM1^(wt)",
+           FLT3 == "Mut" & NPM1 == "Mut" & FLT3VAF == "low" ~ "FLT3^(mut)/FLT3VAF^(low)/NPM1^(mut)",
+           FLT3 == "Mut" & NPM1 == "Mut" & FLT3VAF == "high" ~ "FLT3^(mut)/FLT3VAF^(high)/NPM1^(mut)",
+         )) %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(OSTM, OSSTAT) ~ group,.
+      ),.,
+      pval = T,
+      risk.table = T,
+      palette = "npg",
+      size = 1.5,
+      #fontsize = 7.5,
+      axes.offset = F,
+      ylab = "Overall Survival probability",
+      xlab = "Months",
+      #surv.median.line = "hv",
+      #ggtheme = theme_survminer(font.tickslab =  c(12, "plain","black"))
+    )
+  } -> OS_NPM1_FLT3
+
+png(filename = "OS NPM1_FLT3_stratified.png")
+OS_NPM1_FLT3
+dev.off()
+```
+
+```{r}
+phen_data %>% 
+  mutate(across(.cols = c(NPM1, FLT3), ~ factor(., levels=c(0,1), labels=c("WT", "Mut"))),
+         group = case_when(
+           FLT3 == "WT" ~ "FLT3^(wt)",
+           FLT3 == "Mut" & FLT3VAF == "low" ~ "FLT3^(mut)/FLT3VAF^(low)",
+           FLT3 == "Mut" & FLT3VAF == "high" ~ "FLT3^(mut)/FLT3VAF^(high)")) %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(OSTM, OSSTAT) ~ group,.
+      ),.,
+      pval = T,
+      risk.table = T,
+      palette = "npg",
+      size = 1.5,
+      #fontsize = 7.5,
+      axes.offset = F,
+      ylab = "Overall Survival probability",
+      xlab = "Months",
+      #surv.median.line = "hv",
+      #ggtheme = theme_survminer(font.tickslab =  c(12, "plain","black"))
+    )
+  } -> OS_FLT3
+
+phen_data %>% 
+  filter(cohort == "FFM") %>% 
+  mutate(across(.cols = c(NPM1, FLT3), ~ factor(., levels=c(0,1), labels=c("WT", "Mut"))),
+         group = case_when(
+           FLT3 == "WT" ~ "FLT3^(wt)",
+           FLT3 == "Mut" & FLT3VAF == "low" ~ "FLT3^(mut)/FLT3VAF^(low)",
+           FLT3 == "Mut" & FLT3VAF == "high" ~ "FLT3^(mut)/FLT3VAF^(high)")) %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(OSTM, OSSTAT) ~ group,.
+      ),.,
+      pval = T,
+      risk.table = T,
+      palette = "npg",
+      size = 1.5,
+      #fontsize = 7.5,
+      axes.offset = F,
+      ylab = "Overall Survival probability",
+      xlab = "Months",
+      #surv.median.line = "hv",
+      #ggtheme = theme_survminer(font.tickslab =  c(12, "plain","black"))
+    )
+  } -> OS_FLT3_FFM
+
+
+phen_data %>% 
+  filter(cohort == "SAL") %>% 
+  mutate(across(.cols = c(NPM1, FLT3), ~ factor(., levels=c(0,1), labels=c("WT", "Mut"))),
+         group = case_when(
+           FLT3 == "WT" ~ "FLT3^(wt)",
+           FLT3 == "Mut" & FLT3VAF == "low" ~ "FLT3^(mut)/FLT3VAF^(low)",
+           FLT3 == "Mut" & FLT3VAF == "high" ~ "FLT3^(mut)/FLT3VAF^(high)")) %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(OSTM, OSSTAT) ~ group,.
+      ),.,
+      pval = T,
+      risk.table = T,
+      palette = "npg",
+      size = 1.5,
+      #fontsize = 7.5,
+      axes.offset = F,
+      ylab = "Overall Survival probability",
+      xlab = "Months",
+      #surv.median.line = "hv",
+      #ggtheme = theme_survminer(font.tickslab =  c(12, "plain","black"))
+    )
+  } -> OS_FLT3_SAL
+
+
+```
+
+
+
+## Cox Regression
+
+```{r}
+phen_data %>% 
+  mutate(ELN = factor(ELN, levels=c("int", "fav","adv"))) %>% 
+  {
+    ggforest(
+      coxph(
+        Surv(OSTM, OSSTAT) ~ ELN,.
+      ), data = .
+    )
+  } -> Cox_ELN
+
+png(filename = "Cox ELN_stratified.png")
+Cox_ELN
+dev.off()
+```
+
+
+```{r}
+phen_data %>% 
+  #mutate(ELN = factor(ELN, levels=c("int", "fav","adv"))) %>% 
+  {
+    ggforest(
+      coxph(
+        Surv(OSTM, OSSTAT) ~ NPM1,.
+      ), data = .
+    )
+  } -> Cox_NPM1
+
+png(filename = "Cox NPM1_stratified.png")
+Cox_NPM1
+dev.off()
+
+phen_data %>% 
+  mutate(ELN = factor(ELN, levels=c("int", "fav","adv"))) %>% 
+  {
+    ggforest(
+      coxph(
+        Surv(OSTM, OSSTAT) ~ ELN + NPM1,.
+      ), data = .
+    )
+  } -> Cox_ELN_NPM1
+
+png(filename = "Cox ELN_NPM1_stratified.png")
+Cox_ELN_NPM1
+dev.off()
+
+
+phen_data %>% 
+  #mutate(ELN = factor(ELN, levels=c("int", "fav","adv"))) %>% 
+  {
+    ggforest(
+      coxph(
+        Surv(OSTM, OSSTAT) ~ NPM1 + FLT3,.
+      ), data = .
+    )
+  } -> Cox_NPM1_FLT3
+
+png(filename = "Cox NPM1_FLT3_stratified.png")
+Cox_NPM1_FLT3
+dev.off()
+
+```
+
+
+
+# NPM1 co-mutations
+
+
+NPM1 mutations usually are secondary to DNMT3A mutations and positivly associated with FLT3-ITD mutations. 
+
+While we don't yet have any mutation data on the SAL cohort, we can investigate co-mutation patterns between NPM1 and other recurrent mutations.
+
+```{r}
+mutation_data %>% 
+  filter(Gene == "NPM1") %>% 
+  mutate(coding_region_change = stringr::str_replace_all(string = coding_region_change, pattern = ";", replacement = "")) %>% 
+  group_by(coding_region_change, amino_acid_change) %>% 
+  summarize(n())
+  
+```
+
+The largest fraction (75%) of NPM1 mutations are the most recurrent 4bp duplication or 4bp insertion at 860 - 864 which all affect the critical tryptophan at position 288 resulting in an novel nuclear export sequence. There're two notable mutations, one an SVN on 868 which affects tryptophan 290 and an 4bp insertion at 871 which affects arginine 291.     
+
+## impact of NPM1 mutation status on OS
+
+Notably, 4 NPM1 mutations were not detected in the myeloid panelsequencing presumably due to insufficient sensitivity. 
+
+```{r}
+mutation_data %>% 
+  filter(Gene == "NPM1") %>% distinct(Pat_ID) 
+
+phen_data %>% filter(cohort == "FFM") %>% filter(NPM1 == 1) %>% filter(!ID %in% distinct(filter(mutation_data, Gene == "NPM1"), Pat_ID)$Pat_ID) %>% pull(ID) -> NPM1_patients_not_covered
+
+mutation_data %>% filter(Pat_ID %in% NPM1_patients_not_covered)
+```
+
+NPM1 VAF is not associated with a difference in OS (opposed to what is proposed in Yu, J., Li, Y., Zhang, D., Wan, D., and Jiang, Z. (2020). Clinical implications of recurrent gene mutations in acute myeloid leukemia. Exp. Hematol. Oncol. 9.
+)
+
+```{r}
+mutation_data %>% filter(Gene == "NPM1") %>% dplyr::select(Pat_ID, Gene, variant, VAF) %>% 
+  left_join(phen_data, by=c("Pat_ID" = "ID")) %>% 
+  mutate(fVAF = factor(VAF >= median(VAF), levels=c(F,T), labels=c("low VAF", "high VAF"))) %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(OSTM, OSSTAT) ~ fVAF,.
+      ),.,
+      pval = T,
+      risk.table = T,
+      palette = "nejm",
+      size = 1.5,
+      #fontsize = 7.5,
+      axes.offset = F,
+      ylab = "Overall Survival probability",
+      xlab = "Months",
+      #surv.median.line = "hv",
+      #ggtheme = theme_survminer(font.tickslab =  c(12, "plain","black"))
+    )
+  } -> OS_NPM1_fVAF
+
+png(filename = "OS NPM1_fVAF.png")
+OS_NPM1_fVAF
+dev.off()
+```
+
+
+NPM1 co-mutations
+
+```{r}
+mutation_data %>% 
+  dplyr::select(Pat_ID, Gene, variant) %>% 
+  pivot_wider(names_from = Gene, values_from = variant, id_cols = Pat_ID, values_fn = function(n) {paste0(n, collapse = ";")}, values_fill = "WT") %>% 
+  mutate(across(.cols = -Pat_ID, ~ ifelse(. == "WT", ., "Mutated"))) %>% 
+  pivot_longer(cols = c(-Pat_ID, -NPM1), names_to = "gene", values_to = "variant") %>% 
+  group_by(gene) %>% 
+  summarize(p = 
+    tryCatch(
+      expr = {
+        broom::tidy(fisher.test(variant,NPM1))
+      },
+      error = function(e){
+        return(NA)
+      }
+    )
+  ) %>% unnest(p) %>% 
+  mutate(adj.p.value = p.adjust(p.value, method = "BH")) %>% 
+  arrange(adj.p.value)
+  
+```
+
+
+Venn Diagram for NPM1 co-mutations
+
+```{r}
+mutation_data %>% 
+  dplyr::select(Pat_ID, Gene, variant) %>% 
+  pivot_wider(names_from = Gene, values_from = variant, id_cols = Pat_ID, values_fn = function(n) {paste0(n, collapse = ";")}, values_fill = "WT") %>% 
+  mutate(across(.cols = -Pat_ID, ~ ifelse(. == "WT", ., "Mutated"))) %>% 
+  pivot_longer(cols = c(-Pat_ID), names_to = "gene", values_to = "variant") %>% 
+  filter(gene %in% c("NPM1", "PTPN11", "RUNX1", "DNMT3A")) %>% 
+  filter(variant == "Mutated") %>% 
+  {
+    split(.$Pat_ID, .$gene )
+  } %>% 
+  ggvenn::ggvenn() %>% ggsave(filename = "Venn_allmut.png", width = 5, height = 5)
+```
+
+
+NPM1 and PTPN11
+
+strong positive correlation with all PTPN11 mutated patients also co-habouring a npm1 mutation and 16% of NPM1 mutated patients with a co-occuring PTPN11 mutation
+
+```{r}
+mutation_data %>% 
+  dplyr::select(Pat_ID, Gene, variant) %>% 
+  pivot_wider(names_from = Gene, values_from = variant, id_cols = Pat_ID, values_fn = function(n) {paste0(n, collapse = ";")}, values_fill = "WT") %>% 
+  mutate(across(.cols = -Pat_ID, ~ ifelse(. == "WT", ., "Mutated"))) %>% 
+  pivot_longer(cols = c(-Pat_ID, -NPM1), names_to = "gene", values_to = "variant") %>% 
+  filter(gene == "PTPN11") %>% 
+  {
+    table(PTPN11 = .$variant, NPM1 = .$NPM1) %>% prop.table(margin = 2)
+  }
+```
+
+```{r}
+mutation_data %>% 
+  dplyr::select(Pat_ID, Gene, variant) %>% 
+  pivot_wider(names_from = Gene, values_from = variant, id_cols = Pat_ID, values_fn = function(n) {paste0(n, collapse = ";")}, values_fill = "WT") %>% 
+  mutate(across(.cols = -Pat_ID, ~ ifelse(. == "WT", ., "Mutated"))) %>% 
+  pivot_longer(cols = c(-Pat_ID), names_to = "gene", values_to = "variant") %>% 
+  filter(gene %in% c("NPM1", "PTPN11")) %>% 
+  filter(variant == "Mutated") %>% 
+  {
+    split(.$Pat_ID, .$gene )
+  } %>% 
+  ggvenn::ggvenn() %>% ggsave(filename = "Venn_PTPN11.png", width = 5, height = 5)
+```
+
+
+strong negative correlation between NPM1 mutation and RUNX1 with both being mutually exclusive
+
+```{r}
+mutation_data %>% 
+  dplyr::select(Pat_ID, Gene, variant) %>% 
+  pivot_wider(names_from = Gene, values_from = variant, id_cols = Pat_ID, values_fn = function(n) {paste0(n, collapse = ";")}, values_fill = "WT") %>% 
+  mutate(across(.cols = -Pat_ID, ~ ifelse(. == "WT", ., "Mutated"))) %>% 
+  pivot_longer(cols = c(-Pat_ID, -NPM1), names_to = "gene", values_to = "variant") %>% 
+  filter(gene == "RUNX1") %>% 
+  {
+    table(RUNX1 = .$variant, NPM1 = .$NPM1) %>% prop.table(margin = 2)
+  }
+```
+
+
+```{r}
+mutation_data %>% 
+  dplyr::select(Pat_ID, Gene, variant) %>% 
+  pivot_wider(names_from = Gene, values_from = variant, id_cols = Pat_ID, values_fn = function(n) {paste0(n, collapse = ";")}, values_fill = "WT") %>% 
+  mutate(across(.cols = -Pat_ID, ~ ifelse(. == "WT", ., "Mutated"))) %>% 
+  pivot_longer(cols = c(-Pat_ID), names_to = "gene", values_to = "variant") %>% 
+  filter(gene %in% c("NPM1", "RUNX1")) %>% 
+  filter(variant == "Mutated") %>% 
+  {
+    split(.$Pat_ID, .$gene )
+  } %>% 
+  ggvenn::ggvenn() %>% ggsave(filename = "Venn_RUNX1.png", width = 5, height = 5)
+```
+
+
+
+strong positive correlation between NPM1 and DNMT3A which supports the notion of DNMT3A being a founder mutation for CHIP and additional acquisition of NPM1 mutation driving the leukemogenesis
+
+```{r}
+mutation_data %>% 
+  dplyr::select(Pat_ID, Gene, variant) %>% 
+  pivot_wider(names_from = Gene, values_from = variant, id_cols = Pat_ID, values_fn = function(n) {paste0(n, collapse = ";")}, values_fill = "WT") %>% 
+  mutate(across(.cols = -Pat_ID, ~ ifelse(. == "WT", ., "Mutated"))) %>% 
+  pivot_longer(cols = c(-Pat_ID, -NPM1), names_to = "gene", values_to = "variant") %>% 
+  filter(gene == "DNMT3A") %>% 
+  {
+    table(DNMT3A = .$variant, NPM1 = .$NPM1) %>% prop.table(margin = 2)
+  }
+```
+
+
+```{r}
+mutation_data %>% 
+  dplyr::select(Pat_ID, Gene, variant) %>% 
+  pivot_wider(names_from = Gene, values_from = variant, id_cols = Pat_ID, values_fn = function(n) {paste0(n, collapse = ";")}, values_fill = "WT") %>% 
+  mutate(across(.cols = -Pat_ID, ~ ifelse(. == "WT", ., "Mutated"))) %>% 
+  pivot_longer(cols = c(-Pat_ID), names_to = "gene", values_to = "variant") %>% 
+  filter(gene %in% c("NPM1", "DNMT3A")) %>% 
+  filter(variant == "Mutated") %>% 
+  {
+    split(.$Pat_ID, .$gene )
+  } %>% 
+  ggvenn::ggvenn() %>% ggsave(filename = "Venn_DNMT3A.png", width = 5, height = 5)
+```
+
+
