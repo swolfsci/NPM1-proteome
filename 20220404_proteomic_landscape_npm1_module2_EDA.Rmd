@@ -26,6 +26,11 @@ prot_merge_complete %>%
 
 ggsave(filename = "PC plot global proteome w CD34.jpg", device = "jpg")
 ```
+For most of the analyses we'll work with the AML data set only
+
+```{r}
+prot_merge <- prot_merge_complete[, !grepl("CD34cells", colnames(prot_merge_complete))]
+```
 
 
 ### PC1 vs. PC2
@@ -41,7 +46,7 @@ prot_merge %>%
   geom_point() +
   cowplot::theme_cowplot() +
   labs(title = "PC Plot, NPM1 mutations status", caption = Sys.Date(), x = "PC1 var explained 10%", y = "PC2 var explained 9%") +
-  scale_color_manual(name = "NPM1 mutation status", values = c("#fb8500","#8ecae6")) -> p2
+  scale_color_manual(name = "NPM1 mutation status", values = c("#fb8500","#8ecae6"))
 ```
 
 We next investigate whether any of the first 10 PCs is significantly correlated with NPM1 mutation status. If this was the case, we could maybe gain additional biological insights from this.
@@ -233,14 +238,25 @@ PCGSE::pcgse(data = t(prot_merge_hgnc[intersect_genes, ]),
              pc.indexes = c(3,8), 
              gene.sets = msigdbr_c5_matrix[
                matrixStats::rowSums2(msigdbr_c5_matrix[,intersect_genes]) >= 5,intersect_genes],
-             gene.statistic = "loading") -> pc3_pc8_pcgse_goc5_loadings
+             gene.statistic = "z",
+             gene.set.statistic = "rank.sum",
+             #gene.set.test = "permutation",
+             nperm = 1000) -> pc3_pc8_pcgse_goc5_loadings
 
 
 ```
 
-ToDos from here:
-confirm that prcomp PCs 3 and 8 equal pcMethods PCs 3 and 8
-inspect enrichments
+
+Now we can inspect biological associations for each PC
+
+
+```{r}
+pc3_pc8_pcgse_goc5_loadings$p.values[,1] %>%  
+  as_tibble(rownames = "pathways") %>% 
+  mutate(value = p.adjust(value)) %>% 
+  arrange(value)
+```
+However, after FDR correction, neither PC3 nor PC8 show significant pathway enrichments. 
 
 
 NPM1^mut^ disease is scattered over the plot w/o a clear pattern.

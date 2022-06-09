@@ -33,6 +33,8 @@ tc_distances <- treeClust::treeClust.dist(as.data.frame(prot_merge),
 tc_sim_symm <- 1-as.matrix(tc_distances)
 ```
 
+## Constructing the WGCNA adjacency matrix
+
 After creating the similarity matrix, we use WGCNA sigmoid function to build an adjacency matrix. Here again, the two hyperparameters were tuned based on the Reactome gold standard
 
 ```{r}
@@ -45,5 +47,76 @@ Finally, WGCNA::TOM is used to re-weight the matrix
 adj_mat_tom <- WGCNA::TOMsimilarity( adj_mat, TOMDenom = "mean" )
 colnames(adj_mat_tom) <- colnames(adj_mat)
 rownames(adj_mat_tom) <- colnames(adj_mat)
+```
+
+# Visualization
+
+We use UMAP to visualize the protein-protein distances (1- similarity). UMAP has several hyperparameters which have significant impact on the final representation. Details can be found here
+
+https://umap-learn.readthedocs.io/en/latest/parameters.html
+
+
+
+```{r}
+#library(Rtsne)
+
+1-log2(adj_mat_tom) -> adj_mat_tom.dist
+
+umap::umap(adj_mat_tom.dist, 
+           input = "dist", 
+           verbose = T, 
+           spread = 5, 
+           min_dist = 0.1, 
+           n_neighbors = 10, 
+           n_components = 2) -> umap.out
+
+#Rtsne::Rtsne(adj_mat_tom.dist, theta = 0, perplexity = 30, max_iter = 1000, is_distance = T) -> t_sne.out
+```
+
+
+### UMAP
+
+Clusters are identified using HDBSCAN. eps influences the number of clusters. For a better separation, one could for example increase the number of UMAP components and use the larger space for clustering. 
+
+Finally, ggrepel is used to annotate the cluster numbers.
+
+```{r}
+
+dbscan::dbscan(umap.out$layout, eps = 0.6) -> dbscan.out
+
+umap.out$layout %>% 
+  as_tibble(rownames = "uniprot") %>% 
+  bind_cols(cluster = dbscan.out$cluster) %>% 
+  group_by(cluster) %>% 
+  summarize(V1 = median(V1), V2 = median(V2)) -> ggrepel_df
+
+umap.out$layout %>% 
+  as_tibble(rownames = "uniprot") %>% 
+  bind_cols(cluster = dbscan.out$cluster) %>% 
+  ggplot(aes(x=V1, y = V2, col = factor(cluster), label = cluster)) +
+  geom_point() +
+  cowplot::theme_cowplot() +
+  ggrepel::geom_label_repel(data = ggrepel_df, aes(label = cluster))
+```
+
+
+## GO over representation analyses
+
+We can run a simple enrichment cluster-wise enrichment analysis by pulling the protein IDs of the cluster members and comparin against the universe of all proteins.
+
+```{r}
+umap.out$layout %>% 
+  as_tibble(rownames = "uniprot") %>% 
+  bind_cols(cluster = dbscan.out$cluster) %>% 
+  filter(cluster == 8) %>% 
+  pull(uniprot) %>% 
+  clusterProfiler::enrichGO(gene = ., 
+                            OrgDb = "org.Hs.eg.db", 
+                            ont = "CC", 
+                            pvalueCutoff = 0.05, 
+                            minGSSize = 5, 
+                            keyType = "UNIPROT", 
+                            universe = as.character(rownames(adj_mat_tom))) %>% 
+  as_tibble()
 ```
 
