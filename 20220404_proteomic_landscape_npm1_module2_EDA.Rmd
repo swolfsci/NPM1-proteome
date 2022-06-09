@@ -180,6 +180,23 @@ prot_merge %>%
   column_to_rownames("uniprotid") -> prot_merge_hgnc
 ```
 
+This uses prcompt instead of pcMethods, we'll quickly confirm that they are actually equal
+
+```{r}
+prot_merge %>% 
+  t() %>% 
+  pcaMethods::pca(nPcs = 10) %>% 
+  pcaMethods::loadings() -> pcamethods_scores
+
+prot_merge %>% 
+  t() %>% 
+  prcomp() -> prcomp_scores
+
+cor(prcomp_scores$rotation[,3], pcamethods_scores[,3]) == 1
+cor(prcomp_scores$rotation[,8], pcamethods_scores[,8]) == 1
+
+```
+
 
 ```{r}
 intersect_genes <- intersect(rownames(prot_merge_hgnc), colnames(msigdbr_c5_matrix))
@@ -192,7 +209,8 @@ PCGSE::pcgse(data = t(prot_merge_hgnc[intersect_genes, ]),
              prcomp.output = prot_merge_hgnc.prcomp,
              pc.indexes = c(3,8), 
              gene.sets = msigdbr_c5_matrix[
-               matrixStats::rowSums2(msigdbr_c5_matrix[,intersect_genes]) >= 5,intersect_genes],gene.statistic = "loading") -> pc3_pc8_pcgse_goc5_loadings
+               matrixStats::rowSums2(msigdbr_c5_matrix[,intersect_genes]) >= 5,intersect_genes],
+             gene.statistic = "loading") -> pc3_pc8_pcgse_goc5_loadings
 
 
 ```
