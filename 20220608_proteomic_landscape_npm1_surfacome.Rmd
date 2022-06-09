@@ -1,0 +1,198 @@
+---
+title: "20220517_proteomic_landscape_npm1_surface_proteome"
+output: html_notebook
+---
+# Building a surface subproteome
+
+In order to identify surface proteins of interest (which have high function in biomedical resarch since they might serve as antigens for targeted therapies or enhance diagnostics) we'll make use of the human Surfaceome by Bausch-Fluck et al., PlosOne 2015 (doi <https://doi.org/10.1371/journal.pone.0121314>). This resource contains a downloadable list of validated human surfaceome proteins (<http://wlab.ethz.ch/cspa/#downloads>).
+
+The list includes the uniprotid, the up entry and protein name, furthermore whether the protein is identified to be a "CD" and the CSPA category confidence
+
+regarding the confidence: Proteins with UniProt keywords Cell junction, Cell membrane, Secreted, (Signal peptide AND GPI-anchor) or (Signal peptide AND Transmembrane) were regarded as high-confidence surfaceome proteins (1039 human and 881 mouse proteins, Table A and B in S2 File). 247 human and 242 mouse proteins from the remaining pool have predicted transmembrane domains (but none of the above keywords assigned) and are therefore regarded as putative surfaceome proteins. The functional classification of these proteins and the empirical data of this study provide a basis to refine the annotation of the surfaceome. A remaining set of 206 human and 173 mouse proteins were classified as unspecific. These unspecific proteins were co-purified mainly due to their high abundance in the biological samples. In contrast to affinity enriched N-glycosites, chemical deamidation of asparagines is known to occur in solution. Among these co-purified peptides are nevertheless proteins linked to extracellular matrix (as procollagen transferases) and cytoskeletal protein (as tubulin), which could very well be associated with or present at the cell surface. Overall, the composite surfaceome contains 240/197 CD proteins, 346/315 receptors; of which 69/67 are G-protein coupled receptors and 39/36 receptor tyrosine kinases, and 184/207 transporters (human/mouse).
+
+we'll only use high confidence surface proteins, this retains 234 proteins which are idenified in the data set.
+
+```{r}
+surfaceome <- read_delim("~/Forschung/AG Oellerich/Datensätze/Proteomics Surfacome/Surface Proteins.txt",delim =  "\t")
+
+filter(surfaceome, `CSPA category` == "1 - high confidence") -> surfaceome_high_confidence
+
+
+rownames(prot_merge) %in% surfaceome_high_confidence$`ID link` -> prot_merge_surface_vector
+```
+
+we'll store everyhing in a list object for classification on the cluster
+
+```{r}
+list(
+  prot <- prot_merge,
+  class_vector <- vector_CoI,
+  surface_proteome <- prot_merge_surface_vector
+) -> pred_prot
+
+saveRDS(pred_prot, "pred_prot.RDS")
+```
+
+
+
+# LM DE surface proteins
+
+surfaceome proteome is retrieved as described on the bottom 
+
+```{r}
+npm1_fit %>% 
+  topTable(adjust.method = "BH", p.value = 0.01, number = Inf) %>% 
+  rownames_to_column("PG.UniProtIds") %>% 
+  left_join(
+    npm1_fit_t_scores_biomart, by=c("PG.UniProtIds" = "uniprotswissprot")
+  ) %>% 
+  filter(PG.UniProtIds %in% surfaceome_high_confidence$`ID link`) %>% 
+  mutate(in_consensus = factor(hgnc_symbol %in% c(consensus_signature_up_in_npm1, consensus_signature_down_in_npm1))) %>% 
+  ggplot(aes(x=logFC, y= -log(adj.P.Val), label = hgnc_symbol, col = in_consensus)) +
+  geom_point(alpha = .7) +
+  cowplot::theme_cowplot() +
+  ggrepel::geom_text_repel(max.overlaps = 50) +
+  scale_color_manual(name = "Consensus", values = c("black", "#e85d04")) +
+  scale_alpha_manual(values=c(1,1,0.3)) +
+  theme(legend.position = "none") -> p_surface
+```
+
+simple stepwise logit with DE surface proteins (refined approach with xgboost)
+
+```{r}
+npm1_fit %>% 
+  topTable(adjust.method = "BH", p.value = 0.01, number = Inf) %>% 
+  rownames_to_column("PG.UniProtIds") %>% 
+  left_join(
+    npm1_fit_t_scores_biomart, by=c("PG.UniProtIds" = "uniprotswissprot")
+  ) %>% 
+  filter(PG.UniProtIds %in% surfaceome_high_confidence$`ID link`) %>% 
+  dplyr::select(PG.UniProtIds, hgnc_symbol) -> npm1_de_surfaceome
+
+
+prot_merge[npm1_de_surfaceome$PG.UniProtIds, ] %>% 
+  t() %>% 
+  as_tibble(rownames = "ID") %>% 
+  left_join(dplyr::select(phen_data, ID, NPM1)) %>% 
+  mutate(NPM1 = factor(NPM1, levels=c(0,1), labels=c("wt", "mut"))) %>% 
+  dplyr::select(-ID) -> npm1_de_surfaceome
+
+
+MASS::stepAIC(glm(data = npm1_de_surfaceome, family = "binomial", formula = NPM1 ~ ., control = list(maxit = 1000)), trace = F) -> npm1_de_stepwise_logit
+
+coef(npm1_de_stepwise_logit) %>% 
+  as_tibble(rownames = "uniprotids") %>% 
+  slice(-1) -> npm1_de_stepwise_logit 
+
+npm1_de_stepwise_logit %>% 
+  mutate(uniprotids = uniprotswissprot_to_hgnc_symbol[uniprotids])
+  
+  
+
+```
+
+using a simple 10fold outer cv xgboost to classify NPM1^mut^ vs. NPM1^wt^ on the surface proteome
+
+```{r}
+library(tidymodels)
+library(xgboost)
+
+
+prot_merge[npm1_de_surfaceome$PG.UniProtIds, ] %>% 
+  t() %>% 
+  as_tibble(rownames = "ID") %>% 
+  left_join(
+    dplyr::select(phen_data, ID, NPM1), by = c("ID")
+  ) %>% 
+  dplyr::select(-ID) %>% 
+  mutate(NPM1 = factor(NPM1, levels=c(0,1), labels=c("wt", "mut"))) %>% 
+  filter(!is.na(NPM1)) %>% 
+  initial_split(strata = NPM1) -> prot_split
+
+# create a 60/40 training/test split
+prot_training <- training(prot_split)
+prot_testing <- testing(prot_split)
+
+recipe(NPM1 ~ ., data = prot_training) %>% 
+  step_corr(all_predictors()) %>% 
+  step_zv(all_predictors())-> xgb_recipe
+
+# set model specs, tune everything
+
+xgb_spec <- 
+  boost_tree(
+    mode = "classification",
+    engine = "xgboost",
+    trees = 1000,
+    tree_depth = tune(),
+    min_n = tune(),
+    loss_reduction = tune(),
+    sample_size = tune(),
+    mtry = tune(),
+    learn_rate = tune()
+  )
+
+# create a hypercube for the grid search
+xgb_grid <-
+  grid_latin_hypercube(
+    tree_depth(), 
+    min_n(), 
+    loss_reduction(), 
+    sample_size = sample_prop(), 
+    finalize(mtry(), prot_training), 
+    learn_rate(), 
+    size = 100
+  )
+
+# create workflow
+xgb_wf <- 
+  workflow() %>% 
+  add_recipe(xgb_recipe) %>% 
+  add_model(xgb_spec) 
+
+prot_fold <- vfold_cv(prot_training, strata = NPM1)
+
+doParallel::registerDoParallel(cores  = parallel::detectCores() - 2)
+
+xgb_res <- 
+  tune_grid(
+    xgb_wf,
+    resamples = prot_fold,
+    grid = xgb_grid,
+    control = control_grid(save_pred = T)
+  )
+
+collect_metrics(xgb_res)
+show_best(xgb_res, "roc_auc")
+
+select_best(xgb_res, "roc_auc")
+
+finalize_workflow(xgb_wf, select_best(xgb_res, "roc_auc")) -> xgb_final
+```
+
+Extract feature importance
+
+```{r}
+xgb_final %>% 
+  fit(data = prot_training) %>% 
+  pull_workflow_fit() %>% 
+  vip::vip() -> xgb_vi
+
+xgb_vi$data %>% 
+  mutate(Variable = uniprotswissprot_to_hgnc_symbol[Variable]) %>% 
+  ggplot(aes(x=forcats::fct_reorder(Variable, Importance), y = Importance)) +
+  coord_flip() +
+  geom_col() +
+  cowplot::theme_cowplot() +
+  labs(x="")
+```
+
+Fit the testing data set
+
+```{r}
+final_res <- last_fit(xgb_final, prot_split)
+collect_metrics(final_res)
+collect_predictions(final_res) %>% roc_curve(.pred_wt, truth = NPM1) %>% 
+  autoplot()
+```
+

@@ -45,7 +45,29 @@ PG.Genes and PG.UniProtIds have approx. 350 NAs, the majority of which are NA in
 Imputation was done on the cluster using the DreamAI framework
 
 ```{r}
-prot_merge <- readRDS("~/Forschung/AG Oellerich/Datensätze/Proteomics Merge/AML_Mito_SAL_Merge_DreamAI_imputed.RDS")
+prot_merge_complete <- readRDS("~/Forschung/AG Oellerich/Datensätze/Proteomics Merge/20220608_prot_ffm_sal_cd34_merge_imputed.RDS")
 ```
+
+The complete data set includes also the 12 healthy CD34 cells. 
+
+## Intensity comparison batches
+
+```{r}
+prot_merge_complete %>% 
+  as_tibble(rownames = "uniprot") %>% 
+  pivot_longer(cols = -uniprot, names_to = "ID", values_to = "vsn_intensity") %>% 
+  mutate(batch = case_when(
+    stringr::str_starts(ID, "F") ~ "FFM",
+    stringr::str_starts(ID, "AMLR") ~ "SAL",
+    stringr::str_detect(ID, "CD34cells") ~ "CD34"
+  )) %>% 
+  ggplot(aes(x=vsn_intensity, col = batch)) +
+  geom_density(size  = 1.5) +
+  cowplot::theme_cowplot() +
+  labs(title = "Sampel intensity comparison", caption = Sys.Date(), x = "VSN intensity", y = "Density")
+
+ggsave(filename = "Sample Intensity comparison.jpg", device = "jpg")
+```
+
 
 

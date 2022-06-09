@@ -6,7 +6,27 @@ output: html_notebook
 While in the previous module (module 1) we have done the necessary data carpentry, this module (#2) is dedicated to an initial EDA and describtion of the data set and the clinical cohort. 
 
 
-## Linear Dimensionality Reduction
+## Linear Dimensionality Reduction - complete data set
+
+```{r}
+prot_merge_complete %>% 
+  t() %>% 
+  pcaMethods::pca() %>% 
+  pcaMethods::scores() %>% 
+  as_tibble(rownames = "ID") %>% 
+  mutate(batch = case_when(
+    stringr::str_starts(ID, "F") ~ "FFM",
+    stringr::str_starts(ID, "AMLR") ~ "SAL",
+    stringr::str_detect(ID, "CD34cells") ~ "CD34"
+  )) %>% 
+  ggplot(aes(x=PC1, y = PC2, col = batch)) +
+  geom_point() +
+  cowplot::theme_cowplot() +
+  labs(title = "PC1 vs. PC2 global proteome", caption = paste0("Color coded are batch and healthy CD34+ HSCs\n", Sys.Date())) 
+
+ggsave(filename = "PC plot global proteome w CD34.jpg", device = "jpg")
+```
+
 
 ### PC1 vs. PC2
 
@@ -21,7 +41,7 @@ prot_merge %>%
   geom_point() +
   cowplot::theme_cowplot() +
   labs(title = "PC Plot, NPM1 mutations status", caption = Sys.Date(), x = "PC1 var explained 10%", y = "PC2 var explained 9%") +
-  scale_color_manual(name = "NPM1 mutation status", values = c("#fb8500","#8ecae6"))
+  scale_color_manual(name = "NPM1 mutation status", values = c("#fb8500","#8ecae6")) -> p2
 ```
 
 We next investigate whether any of the first 10 PCs is significantly correlated with NPM1 mutation status. If this was the case, we could maybe gain additional biological insights from this.
@@ -197,6 +217,9 @@ cor(prcomp_scores$rotation[,8], pcamethods_scores[,8]) == 1
 
 ```
 
+Now run PCGSE enrichment on PCs 3 and 8
+We limit the genes to those intersecting between the data set and the gene sets
+Furthermore, we'll limit the gene sets to those with at least 5 active genes. 
 
 ```{r}
 intersect_genes <- intersect(rownames(prot_merge_hgnc), colnames(msigdbr_c5_matrix))

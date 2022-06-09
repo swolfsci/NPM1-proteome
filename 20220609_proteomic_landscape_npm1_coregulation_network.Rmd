@@ -1,0 +1,49 @@
+---
+title: "20220609_proteomic_landscape_npm1_coregulation_network"
+output: html_notebook
+---
+
+# Introduction
+
+Proteomics, as opposed to genomics, is much better suited to create networks of protein-protein interaction, co-occurance and co-regulation. While for protein-protein interactions, targeted assays such as BioID are superior, broad patterns of co-regulations can be readily build from global proteomic data. 
+
+Kustatscher at al. have outlined a computational framework for the creation of a protein co-regulation map at https://www.nature.com/articles/s41587-019-0298-5
+
+The creation can be split into two sub-processes, one is the creation of an suitable metric to assess the degree of co-regulation/correlation and the second is the modelling of the underlying network based on that metric.
+
+Kustatscher et al. propose using the treeClust algorithm to model the co-regulation as opposed to traditionally used methods such as pearson correlation coefficient (PCC). They show in a set of simulation experiments, that treeClust, enhanced with an additional topological overlap measure (TOM), outperforms PCC (much lower fraction of false-positives).
+
+They tuned a hyperparameter optimazation for treeClusts serule (tree pruning) and complexity using a grid search against a Reactome gold standard of protein-protein interactions. The optimal hyperparameters were found the be serule = 1.8 and cp = 0.105
+
+## Building a treeClus dis-similarity matrix
+
+```{r}
+require(treeClust)
+require(WGCNA)
+
+#calculate the treeClust distance using the hyperparameters from Kustatscher et al.
+
+tc_distances <- treeClust::treeClust.dist(as.data.frame(prot_merge),
+                               d.num = 2,
+                               verbose = TRUE,
+                               rcontrol = rpart.control(cp = 0.105),
+                               control = treeClust.control(serule = 1.8) )
+
+## Turn the distance matrix into a similarity matrix
+tc_sim_symm <- 1-as.matrix(tc_distances)
+```
+
+After creating the similarity matrix, we use WGCNA sigmoid function to build an adjacency matrix. Here again, the two hyperparameters were tuned based on the Reactome gold standard
+
+```{r}
+adj_mat <- WGCNA::sigmoidAdjacencyFunction(tc_sim_symm, mu = 0.91, alpha = 37)
+```
+
+Finally, WGCNA::TOM is used to re-weight the matrix
+
+```{r}
+adj_mat_tom <- WGCNA::TOMsimilarity( adj_mat, TOMDenom = "mean" )
+colnames(adj_mat_tom) <- colnames(adj_mat)
+rownames(adj_mat_tom) <- colnames(adj_mat)
+```
+
