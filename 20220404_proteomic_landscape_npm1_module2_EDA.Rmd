@@ -256,10 +256,31 @@ pc3_pc8_pcgse_goc5_loadings$p.values[,1] %>%
   mutate(value = p.adjust(value)) %>% 
   arrange(value)
 ```
+
 However, after FDR correction, neither PC3 nor PC8 show significant pathway enrichments. 
 
+### Loadings PC3 vs. PC8
 
-NPM1^mut^ disease is scattered over the plot w/o a clear pattern.
+Finally, we can inspect and compare the loadings of PC3 and 8 with opposite signs
+
+```{r fig.width=7, fig.height=5}
+prot_merge %>% 
+  t() %>% 
+  pcaMethods::pca(nPcs = 10) %>% 
+  pcaMethods::loadings() %>% 
+  as_tibble(rownames = "uniprotid") %>% 
+  dplyr::select(uniprotid, PC3, PC8) %>% 
+  filter((sign(PC3) != sign(PC8)) & (abs(PC3) >= quantile(PC3, 0.90) | abs(PC8) >= quantile(PC8, 0.90))) %>% 
+  ggplot(aes(x=PC3, y=PC8, label = uniprotswissprot_to_hgnc_symbol[uniprotid])) +
+  geom_point() +
+  cowplot::theme_cowplot() +
+  labs(title = "PC3 top 10% vs. PC8 top 10% opposite loadings", caption = Sys.Date(), x = "PC3", y = "PC8") +
+  ggrepel::geom_text_repel()
+
+ggsave(filename = "PC3_toploadings_vs_PC8_toploadings.png", device = "png", dpi = 300, width = 7, height = 5)
+```
+
+And find again similar patterns (i.e. CD34 and CD33)
 
 ## Non-linear UMAP
 
@@ -658,13 +679,53 @@ gse_reactome_sim %>%
 Using a gradient boosted decision tree-based classifier (xgboost) we predict NPM1^mut^ vs. NPM1^wt^. To this end, a classifier is trained on the proteome in a 10fold nested cv and variable importance is extracted. Variables that appear in at least 5 of the 10 inner folds of the classifier are considered important features and are extracted.
 
 ```{r}
-npm1_pred_vi <- read_csv("~/Forschung/AG Oellerich/NPM1 Proteome/signature_sampling_norm.csv", col_names = c("uniprotid", "count"), skip = 1)
+xgb_pred_npm1_proteome <- read_csv("xgb_npm1_pred_allprot.csv")
 
-clusterProfiler::bitr(npm1_pred_vi$uniprotid, fromType = "UNIPROT", toType = "SYMBOL", OrgDb = org.Hs.eg.db, drop = F) %>% 
-  left_join(npm1_pred_vi, by=c("UNIPROT" = "uniprotid")) -> npm1_pred_vi
+xgb_pred_npm1_proteome %>% 
+  rename("uniprotid" = "...1") %>% 
+  mutate(hgnc_symbol = uniprotswissprot_to_hgnc_symbol[uniprotid]) -> xgb_pred_npm1_proteome
 
+xgb_pred_npm1_proteome[grepl(xgb_pred_npm1_proteome$uniprotid, pattern = "A6NCW0"),]$hgnc_symbol <- "USP17L3"
 
 ```
+
+We'll draw a heatmap using only the proteins that were identified as highly contributing
+
+```{r fig.width=9, fig.height=7}
+prot_merge[xgb_pred_npm1_proteome$uniprotid,] %>% 
+  t() %>% 
+  scale() %>% 
+  t() %>% 
+  ComplexHeatmap::Heatmap(top_annotation = NPM1_anno, 
+                          clustering_method_columns = "ward.D2", 
+                          row_labels = xgb_pred_npm1_proteome$hgnc_symbol,
+                          show_column_names = F,
+                          column_split = 4, 
+                          row_split = 4) %>% ComplexHeatmap::draw() -> h1
+
+png(filename = "xgb_pred_npm1_all_prot_heatmap.png", width = 9, height  = 7, units = "in", res = 300)
+h1
+dev.off()
+```
+
+Signature proteins ORA
+
+
+```{r}
+clusterProfiler::enrichGO(gene = xgb_pred_npm1_proteome$uniprotid,
+                          OrgDb = "org.Hs.eg.db", 
+                          keyType = "UNIPROT", 
+                          minGSSize = 1, 
+                          maxGSSize = Inf, 
+                          pvalueCutoff = 0.1, 
+                          pAdjustMethod = "BH", 
+                          ont = "ALL",
+                          universe = rownames(prot_merge))
+```
+
+Which is not really informative!
+
+
 
 Combining vi with the lm fit to identify which proteins are up- or down-regulated
 

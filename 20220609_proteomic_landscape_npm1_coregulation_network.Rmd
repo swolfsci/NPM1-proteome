@@ -1,6 +1,6 @@
 ---
 title: "20220609_proteomic_landscape_npm1_coregulation_network"
-output: html_notebook
+output: github_document
 ---
 
 # Introduction
@@ -14,6 +14,10 @@ The creation can be split into two sub-processes, one is the creation of an suit
 Kustatscher et al. propose using the treeClust algorithm to model the co-regulation as opposed to traditionally used methods such as pearson correlation coefficient (PCC). They show in a set of simulation experiments, that treeClust, enhanced with an additional topological overlap measure (TOM), outperforms PCC (much lower fraction of false-positives).
 
 They tuned a hyperparameter optimazation for treeClusts serule (tree pruning) and complexity using a grid search against a Reactome gold standard of protein-protein interactions. The optimal hyperparameters were found the be serule = 1.8 and cp = 0.105
+
+Code is found at 
+
+https://github.com/Rappsilber-Laboratory/ProteomeHD/blob/master/R%20scripts/tSNE_map.R#L11
 
 ## Building a treeClus dis-similarity matrix
 
@@ -51,7 +55,7 @@ rownames(adj_mat_tom) <- colnames(adj_mat)
 
 # Visualization
 
-We use UMAP to visualize the protein-protein distances (1- similarity). UMAP has several hyperparameters which have significant impact on the final representation. Details can be found here
+We can use UMAP to visualize the protein-protein distances (1- similarity). UMAP has several hyperparameters which have significant impact on the final representation. Details can be found here
 
 https://umap-learn.readthedocs.io/en/latest/parameters.html
 
@@ -98,6 +102,22 @@ umap.out$layout %>%
   cowplot::theme_cowplot() +
   ggrepel::geom_label_repel(data = ggrepel_df, aes(label = cluster))
 ```
+
+
+## tSNE
+
+An alternative to UMAP is tSNE. Here, we need to tune two hyperparameters, the number of PCs to use and the perplexity. 
+
+There's a extensive towardsdatascience article by Nikolay Oskolkov that discusses quasi-empirical ways to approach this
+
+https://towardsdatascience.com/how-to-tune-hyperparameters-of-tsne-7c0596a18868
+
+i.e. using an initial estimate for perplexity as `r ncol(adj_mat)^(1/2)` and estimating the number of informative PCs via permutation
+
+```{r}
+prcomp(adj_mat_tom.dist)
+```
+
 
 
 ## GO over representation analyses

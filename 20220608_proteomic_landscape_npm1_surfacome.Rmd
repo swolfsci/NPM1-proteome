@@ -57,6 +57,48 @@ npm1_fit %>%
   theme(legend.position = "none") -> p_surface
 ```
 
+
+
+# XGB Surfaceome Prediction
+
+Florian Buettner trained an xgboost classifier for predicting NPM1 mutation status based on the surfaceome subproteome. An example setup is found below. 
+
+Specifically, an 10fold nested cv was used to train a classifier and extract features of importance that appear in at least 9 of the 10 outer folds.  
+
+```{r}
+xgb_pred_npm1_surfaceome <- read_csv("xgb_npm1_pred_surfaceome.csv")
+
+xgb_pred_npm1_surfaceome %>% 
+  rename("uniprotid" = "...1") %>% 
+  mutate(hgnc_symbol = uniprotswissprot_to_hgnc_symbol[uniprotid]) -> xgb_pred_npm1_surfaceome
+  
+```
+
+
+We can use these proteins to visualize a heatmap
+
+
+```{r}
+prot_merge[xgb_pred_npm1_surfaceome$uniprotid, ] %>% 
+  t() %>% 
+  scale() %>% 
+  t() %>% 
+  ComplexHeatmap::Heatmap(top_annotation = NPM1_anno)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 simple stepwise logit with DE surface proteins (refined approach with xgboost)
 
 ```{r}
