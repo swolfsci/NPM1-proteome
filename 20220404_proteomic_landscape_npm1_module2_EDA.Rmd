@@ -555,58 +555,38 @@ npm1_top_up_DGI %>% rDGIdb::detailedResults() %>% filter(InteractionType != "")
 
 To gain functional understanding of underlying biology, we'll first run a GSEA on the DE proteins NPM1^mut^ vs NPM1^wt^ and further use the Stringdb resource for a protein network analysis.
 
+
+#### GOCC
+
+
 ```{r}
 library(clusterProfiler)
 
 npm1_fit %>% 
   topTable(number = Inf) %>% 
-  rownames_to_column("PG.UniProtIds") %>% 
-  left_join(
-    npm1_fit_t_scores_biomart, by=c("PG.UniProtIds" = "uniprotswissprot")
-  ) %>% 
-  filter(!is.na(hgnc_symbol)) %>% 
-  dplyr::select(hgnc_symbol, t) %>% 
-  deframe() %>% 
-  sort(decreasing = T) -> npm1_vector
+  as_tibble(rownames = "uniprotid") %>% 
+  dplyr::select(uniprotid, t) %>% 
+  arrange(desc(t)) %>% 
+  deframe() -> npm1_vector
 
-npm1_vector %>% 
-  gseGO(OrgDb = org.Hs.eg.db, 
-           keyType = "SYMBOL", 
-           pAdjustMethod = "BH", 
-           ont = "BP", 
-           pvalueCutoff = 0.05,
-           minGSSize = 10, 
-           maxGSSize = Inf) -> gse_bp
-
-npm1_vector %>% 
-  gseGO(OrgDb = org.Hs.eg.db, 
-           keyType = "SYMBOL", 
-           pAdjustMethod = "BH", 
-           ont = "CC", 
-           pvalueCutoff = 0.05,
-           minGSSize = 10, 
-           maxGSSize = Inf) -> gse_cc
-
+clusterProfiler::gseGO(
+  geneList = npm1_vector,
+  OrgDb = "org.Hs.eg.db", 
+  keyType = "UNIPROT", 
+  pAdjustMethod = "BH", 
+  ont = "CC", 
+  pvalueCutoff = 0.01,
+  minGSSize = 10, 
+  maxGSSize = Inf) -> npm1_fit.gsea_go.cc
 
 
 ```
 
-#### GOBP
+
+Calculate pairwise termsims for clustering
 
 ```{r}
-library(simplifyEnrichment)
-library(enrichplot)
-
-pairwise_termsim(gse_bp) -> gse_bp_sim
-
-gse_bp_sim %>% 
-  group_by(sign(NES)) %>% 
-  slice(1:10) %>% as_tibble() %>% 
-  ggplot(aes(x=forcats::fct_reorder(Description, NES), y = NES)) + coord_flip() +
-  geom_col() +
-  cowplot::theme_cowplot() +
-  labs(x="")
-
+npm1_fit.gsea_go.cc %>% enrichplot::pairwise_termsim() -> npm1_fit.gsea_go.cc
 ```
 
 Mitochondrial terms are highly enriched in NPM1^mut^ AML. However, much more prominent are down-regulated pathways. 
@@ -615,23 +595,74 @@ Mitochondrial terms are highly enriched in NPM1^mut^ AML. However, much more pro
 emapplot(gse_bp_sim)
 ```
 
-#### GOCC
+Top up-regulated
 
-```{r}
-pairwise_termsim(gse_cc) -> gse_cc_sim
-
-gse_cc_sim %>% 
-  group_by(sign(NES)) %>% 
-  slice(1:10) %>% as_tibble() %>% 
-  ggplot(aes(x=forcats::fct_reorder(Description, NES), y = NES)) + coord_flip() +
-  geom_col() +
+```{r fig.width=7, fig.height=5}
+npm1_fit.gsea_go.cc %>% 
+  as_tibble() %>% 
+  arrange(desc(NES)) %>% 
+  head(10) %>% 
+  mutate(Description = stringr::str_trunc(Description, width = 50, side = "right")) %>% 
+  ggplot(aes(x=forcats::fct_reorder(Description, NES), y = NES, size = setSize, col = -log(p.adjust))) +
+  geom_point() + 
   cowplot::theme_cowplot() +
-  labs(x="")
+  coord_flip() +
+  scale_fill_viridis_c() +
+  labs(caption = Sys.Date(), x = "", y = "NES") -> npm1_fit.gsea_go.cc.up
+
 ```
 
-```{r}
-emapplot(gse_cc_sim)
+Majority are mitochondrial terms (again)
+
+Top down-regulated
+
+```{r fig.width=9, fig.height=6}
+npm1_fit.gsea_go.cc %>% 
+  as_tibble() %>% 
+  arrange(NES) %>% 
+  head(30) %>% 
+  mutate(Description = stringr::str_trunc(Description, width = 50, side = "right")) %>% 
+  ggplot(aes(x=forcats::fct_reorder(Description, NES, .desc = T), y = NES, size = setSize, col = -log(p.adjust))) +
+  geom_point() + 
+  cowplot::theme_cowplot() +
+  coord_flip() +
+  scale_fill_viridis_c() +
+  labs(caption = Sys.Date(), x = "", y = "NES") +
+  scale_y_reverse() -> npm1_fit.gsea_go.cc.down
 ```
+
+```{r fig.width=15, fig.height=8}
+cowplot::plot_grid(plotlist = list(npm1_fit.gsea_go.cc.up, npm1_fit.gsea_go.cc.down), 
+                   rel_heights = c(1,1),
+                   labels = c("GO CC up", "GO CC down"), 
+                   ncol = 2,
+                   rel_widths = c(1,1.5))
+
+ggsave("gsea_npm1_gocc.png", width = 15, height = 8, dpi = 300, device = "png")
+
+```
+
+
+#### GOBP
+
+```{r}
+clusterProfiler::gseGO(
+  geneList = npm1_vector,
+  OrgDb = "org.Hs.eg.db", 
+  keyType = "UNIPROT", 
+  pAdjustMethod = "BH", 
+  ont = "BP", 
+  pvalueCutoff = 0.01,
+  minGSSize = 10, 
+  maxGSSize = Inf) -> npm1_fit.gsea_go.bp
+
+npm1_fit.gsea_go.bp %>% 
+  filter(NES <= -2) %>% 
+  enrichplot::pairwise_termsim() %>%
+  enrichplot::treeplot()
+```
+
+
 
 #### REACTOME
 

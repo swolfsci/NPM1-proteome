@@ -21,13 +21,13 @@ Since we've alrady performed most of the steps, I'll manually remove low varianc
 ```{r}
 library(cola)
 
-
+# outliers are trimmed using the adjust_outlier function
 adjust_outlier(prot_merge[,npm1_mutated_patients]) -> prot_npm1
 
 # define 5% quantile of row sds
 quantile(matrixStats::rowSds(prot_npm1), 0.05) -> lower_sd_filter
 
-# filter matrix
+# and rows with a SD below the 5% quantile are filtered
 prot_npm1[matrixStats::rowSds(prot_npm1) >= lower_sd_filter ,] -> prot_npm1
 ```
 
@@ -38,27 +38,30 @@ Feature selection for further sub-partinioning can be done in various ways, the 
 Since version 2.0, cola supports hierarchical partitioning as an additional, meta-framework for the sub-partitioning algorithm. To this end, after identification of major clusters, resulting clusters are again sub-partitioned until an threshold (mean sillhouette score) is met. With this, smaller, sub-clusters can be identified which would otherwise
 
 ```{r eval = F}
-doParallel::registerDoParallel(cores = parallel::detectCores() - 1)
+# parallellizsation doesn't work in my hands
+#doParallel::registerDoParallel(cores = parallel::detectCores() - 1)
 
+
+# filter covariates to include in the clustering analysis
 phen_data %>% 
   column_to_rownames("ID") %>%
-  dplyr::select(batch, Age, AMLSTAT, ELN, FLT3) -> npm1_phen
+  dplyr::select(cohort, Age, AMLSTAT, ELN, FLT3, FAB) -> npm1_phen
 
 library(NMF)
 
 register_NMF()
 #register_SOM()
 
-hierarchical_partition(prot_npm1,
-                       top_value_method = all_top_value_methods(),
-                       partition_method = all_partition_methods(),
-                       combination_method = expand.grid(all_top_value_methods(), all_partition_methods()),
-                       anno = npm1_phen[colnames(prot_npm1),],
-                       cores = parallel::detectCores() - 1,
-                       # we've already manually filtered by variance
-                       filter_fun = function(mat) {rep(T, nrow(mat))},
-                       # test a maximum of 6 clusters
-                       max_k = 6) -> npm1_hierarchical_partitioning_out
+run_all_consensus_partition_methods(
+  data = prot_npm1, 
+  top_value_method = all_top_value_methods(),
+  partition_method = all_partition_methods(),
+  anno = npm1_phen[colnames(prot_npm1),],
+  cores = parallel::detectCores() - 1,
+  # test a maximum of 4 clusters
+  max_k = 4,
+  verbose = T) -> npm1.all_consensus_partition_k4.out
+
 ```
 
 ### Exploration
@@ -68,19 +71,12 @@ npm1_hierarchical_partitioning_out
 ```
 
 ```{r}
-collect_classes(npm1_hierarchical_partitioning_out)
+collect_classes(npm1.all_consensus_partition_k4.out, k  = 2)
 ```
 
-```{r}
-node_info(npm1_hierarchical_partitioning_out)
-```
-
-This gives a overview over all sub-partitionings that were performed, the method used for the particular split (best_method), the resulting depth and best k (number of clusters). Signatures are defined as genes/proteins significantly associated with a clustersplit. There's the absolute number of signatures (n_signatures) and the proportion of signatures relative to all genes/proteins (p_signatures).
-
-Best k and ideal number of signatures (this should correlate with "biological information" retained in the split) can be inferred from the node info.
 
 ```{r}
-suggest_best_k(npm1_hierarchical_partitioning_out)
+suggest_best_k(npm1.all_consensus_partition_k4.out)
 ```
 
 From this, the first split (node 0) is best done by kmeans on the ATC-selected top rows which results in 3 leafs. Further splits are suggested to be done by pam and mclust.
@@ -150,7 +146,7 @@ run_all_consensus_partition_methods(prot_npm1,
 
 npm1_consensus_partitioning_out %>% collect_plots(k = 2)
 
-get_classes(npm1_consensus_partitioning_out["SD:kmeans"], k = 2) %>% 
+get_classes(npm1.all_consensus_partition_k4.out["SD:kmeans"], k = 2) %>% 
   rownames_to_column("ID") %>% 
   left_join(phen_data) %>% 
   {

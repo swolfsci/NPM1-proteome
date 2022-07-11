@@ -39,7 +39,7 @@ saveRDS(pred_prot, "pred_prot.RDS")
 
 surfaceome proteome is retrieved as described on the bottom 
 
-```{r}
+```{r fig.width=7, fig.height=5}
 npm1_fit %>% 
   topTable(adjust.method = "BH", p.value = 0.01, number = Inf) %>% 
   rownames_to_column("PG.UniProtIds") %>% 
@@ -57,6 +57,9 @@ npm1_fit %>%
   theme(legend.position = "none") -> p_surface
 ```
 
+```{r}
+ggsave(plot = p_surface, filename = "NPM1_surfaceome_lmfit.png", device = "png", width = 7, height = 5, dpi = 300)
+```
 
 
 # XGB Surfaceome Prediction
@@ -83,7 +86,16 @@ prot_merge[xgb_pred_npm1_surfaceome$uniprotid, ] %>%
   t() %>% 
   scale() %>% 
   t() %>% 
-  ComplexHeatmap::Heatmap(top_annotation = NPM1_anno)
+  ComplexHeatmap::Heatmap(top_annotation = NPM1_anno, clustering_method_columns = "ward.D2", 
+                          row_labels = xgb_pred_npm1_surfaceome$hgnc_symbol, 
+                          column_split = 3,
+                          show_column_names = F) %>% 
+  ComplexHeatmap::draw() -> h1
+
+
+png(filename = "xgb_pred_npm1_surfaceome_heatmap.png", width = 9, height  = 7, units = "in", res = 300)
+h1
+dev.off()
 ```
 
 
