@@ -84,7 +84,7 @@ Clusters are identified using HDBSCAN. eps influences the number of clusters. Fo
 
 Finally, ggrepel is used to annotate the cluster numbers.
 
-```{r}
+```{r fig.width=8, fig.height=6}
 
 dbscan::dbscan(umap.out$layout, eps = 0.6) -> dbscan.out
 
@@ -101,6 +101,8 @@ umap.out$layout %>%
   geom_point() +
   cowplot::theme_cowplot() +
   ggrepel::geom_label_repel(data = ggrepel_df, aes(label = cluster))
+
+ggsave("npm1_proteome_wgcna_umap.png", device = "png", dpi = 300, width = 8, height = 6)
 ```
 
 
@@ -128,14 +130,14 @@ We can run a simple enrichment cluster-wise enrichment analysis by pulling the p
 umap.out$layout %>% 
   as_tibble(rownames = "uniprot") %>% 
   bind_cols(cluster = dbscan.out$cluster) %>% 
-  filter(cluster == 8) %>% 
+  filter(cluster == 7) %>% 
   pull(uniprot) %>% 
   clusterProfiler::enrichGO(gene = ., 
                             OrgDb = "org.Hs.eg.db", 
                             ont = "CC", 
                             pvalueCutoff = 0.05, 
                             minGSSize = 5, 
-                            keyType = "UNIPROT", 
+                            keyTypSe = "UNIPROT", 
                             universe = as.character(rownames(adj_mat_tom))) %>% 
   as_tibble()
 ```

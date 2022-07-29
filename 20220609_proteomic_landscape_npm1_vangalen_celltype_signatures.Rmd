@@ -1,0 +1,155 @@
+---
+title: "20220726_proteomic_landscape_npm1_vangalen_celltype_signatures"
+output: html_notebook
+---
+
+# Intro
+
+In https://doi.org/10.1016/j.cell.2019.01.031 van Galen et al. perform extensive single-cell studies on healthy and AML patient bone marrow and amongst others derive gene signatures for cell type deconvolution. We can use these signatures to perform GSVA.
+Signatures are from healthy bone marrow cells (_normal) or AML/tumor (_like_tumor).
+
+# Load Signatures
+
+```{r}
+vangalen_cellsignatures <- readxl::read_excel("vangalen signatures/mmc3.xlsx")
+```
+
+```{r}
+vangalen_cellsignatures %>% dplyr::select(-`#`) -> vangalen_cellsignatures
+```
+## Prepare gene set list
+
+```{r}
+
+vangalen_cellsignatures %>% 
+  pivot_longer(cols = everything(), names_to = "signature", values_to = "gene") %>% 
+  {
+    split(.$gene, .$signature)
+  } -> vangalen_cellsignatures
+```
+
+## Map proteome
+
+```{r}
+prot_merge_npm1.gsva <- prot_merge_npm1
+rownames(prot_merge_npm1.gsva) <- uniprotswissprot_to_hgnc_symbol[rownames(prot_merge_npm1.gsva)]
+prot_merge_npm1.gsva[!is.na(rownames(prot_merge_npm1.gsva)), ] -> prot_merge_npm1.gsva
+```
+
+
+## Run GSVA
+
+```{r}
+library(GSVA)
+
+gsva(expr = prot_merge_npm1.gsva, gset.idx.list = vangalen_cellsignatures, kcdf = "Gaussian") -> prot_merge_npm1.gsva
+```
+
+# Visualization
+
+## Impose class split
+
+Build phen_data df for NPM1 subset
+
+```{r}
+phen_data[phen_data$NPM1 == 1 & !is.na(phen_data$NPM1),] %>% 
+  mutate(across(.cols = c(NPM1, FLT3), ~ factor(., levels=c(0,1), labels=c("WT", "Mut"))),
+         group = case_when(
+           FLT3 == "WT" ~ "FLT3^(wt)",
+           FLT3 == "Mut" & FLT3VAF == "low" ~ "FLT3^(mut)/FLT3VAF^(low)",
+           FLT3 == "Mut" & FLT3VAF == "high" ~ "FLT3^(mut)/FLT3VAF^(high)")) %>% 
+  mutate(group2 = case_when(
+    group %in% c("FLT3^(wt)", "FLT3^(mut)/FLT3VAF^(low)") ~ "fav",
+    TRUE ~ "adverse"
+  )) -> phen_data_npm1
+```
+
+
+And annotate FLT3 mutation status b/c there's a bias with higher FLT3-mutation frequency in class 1
+
+```{r}
+
+class_annotation <- ComplexHeatmap::HeatmapAnnotation(df = data.frame(
+  FLT3 = as.factor(phen_data_npm1$FLT3),
+  FLT3_VAF = phen_data_npm1$FLT3VAF), 
+  col = list(
+    `FLT3` = c("WT" = "white", "Mut" = "blue"),
+    `FLT3_VAF` = c("high" = "red", "low" =  "green")
+  ))
+
+
+
+prot_merge_npm1.gsva %>% 
+  ComplexHeatmap::Heatmap(column_split =  cola::get_classes(npm1.all_consensus_partition_k4.out["SD:kmeans"], k = 2)$class,
+                          show_column_names = F, top_annotation = class_annotation)
+```
+
+
+```{r}
+prot_merge_npm1.gsva %>% 
+  ComplexHeatmap::Heatmap(column_split =  phen_data_npm1$group2,
+                          show_column_names = F, top_annotation = class_annotation)
+```
+
+
+## hc
+
+```{r}
+prot_merge_npm1.gsva %>% 
+  ComplexHeatmap::Heatmap(top_annotation = class_annotation,
+                          show_column_names = F, column_split = 2)
+```
+
+
+# Significane
+
+General significant correlation between a vector and the classification
+
+```{r}
+prot_merge_npm1.gsva %>% 
+  t() %>% 
+  cbind(class = cola::get_classes(npm1.all_consensus_partition_k4.out["SD:kmeans"], k = 2)$class) %>% 
+  as_tibble(rownames = "sample") %>% 
+  summarize(across(.cols = c(-sample, -class), ~ broom::tidy(
+    glm(
+      as.factor(class) ~ ., family = "binomial"
+    )
+  ))) %>% 
+  slice(-1) %>% 
+  pivot_longer(cols = everything(), names_to = "celltype", values_to = "score") %>% 
+  unnest(score) %>% 
+  mutate(adj.p.value = p.adjust(p.value, method = "BH")) %>% 
+  arrange(adj.p.value)
+   
+```
+
+Wilcoxon test for significant difference between cell type score and classes
+
+```{r}
+# use rstatix to calculate and adjust significance levels
+prot_merge_npm1.gsva %>% 
+  t() %>% 
+  cbind(class = cola::get_classes(npm1.all_consensus_partition_k4.out["SD:kmeans"], k = 2)$class) %>% 
+  as_tibble(rownames = "sample") %>% 
+  pivot_longer(cols = c(-sample, -class), names_to = "cell_type", values_to = "score") %>% 
+  mutate(cell_type = as.factor(cell_type), class = as.factor(class)) %>% 
+  group_by(cell_type) %>% 
+  rstatix::wilcox_test(score ~ class) %>% 
+  rstatix::adjust_pvalue(method = "BH") %>% 
+  rstatix::add_significance() %>% 
+  rstatix::add_xy_position() -> prot_merge_npm1.gsva.hypothesis_testint_df
+
+prot_merge_npm1.gsva %>% 
+  t() %>% 
+  cbind(class = cola::get_classes(npm1.all_consensus_partition_k4.out["SD:kmeans"], k = 2)$class) %>% 
+  as_tibble(rownames = "sample") %>% 
+  pivot_longer(cols = c(-sample, -class), names_to = "cell_type", values_to = "score") %>% 
+  mutate(cell_type = as.factor(cell_type), class = as.factor(class)) %>% 
+  ggplot(aes(x=class, y = score)) +
+  geom_boxplot() +
+  facet_wrap(. ~ cell_type) +
+  ggpubr::stat_pvalue_manual(data = prot_merge_npm1.gsva.hypothesis_testint_df) + #pre-calculated and adjusted significance levels
+  cowplot::theme_cowplot()
+  
+```
+

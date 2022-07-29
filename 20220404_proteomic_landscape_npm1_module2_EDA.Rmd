@@ -757,6 +757,29 @@ clusterProfiler::enrichGO(gene = xgb_pred_npm1_proteome$uniprotid,
 Which is not really informative!
 
 
+We can furthermore identify the signature proteins within the NPM1mut DE protein volcano plot
+
+```{r}
+npm1_fit %>% 
+  topTable(adjust.method = "BH", p.value = 0.01, number = Inf) %>% 
+  rownames_to_column("PG.UniProtIds") %>% 
+  left_join(
+    npm1_fit_t_scores_biomart, by=c("PG.UniProtIds" = "uniprotswissprot")
+  ) %>% 
+  mutate(in_signature = factor(PG.UniProtIds %in% xgb_pred_npm1_proteome$uniprotid, levels=c(T,F))) %>% 
+  ggplot(aes(x=logFC, y= -log(adj.P.Val), label = hgnc_symbol, col = in_signature, alpha = in_signature)) +
+  geom_point(alpha = .7) +
+  cowplot::theme_cowplot() +
+  ggrepel::geom_text_repel() +
+  scale_color_manual(name = "Consensus", values = c("#e85d04", "#3a86ff", "black")) +
+  scale_alpha_manual(values=c(1,1,0.6)) +
+  theme(legend.position = "none") +
+  labs(title = expression("Differentially expressed proteins NPM1"^mut ~ " vs. NPM1"^wt), 
+       caption = expression("DE genes previously published are color coded (blue = consensus up in NPM1"^mut ~", orange = consensus down in NPM1"^mut), x = "logFC", y = "-log(adjusted P)") 
+  
+```
+
+
 
 Combining vi with the lm fit to identify which proteins are up- or down-regulated
 

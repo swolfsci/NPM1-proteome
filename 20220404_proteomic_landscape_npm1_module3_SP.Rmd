@@ -35,7 +35,10 @@ prot_npm1[matrixStats::rowSds(prot_npm1) >= lower_sd_filter ,] -> prot_npm1
 
 Feature selection for further sub-partinioning can be done in various ways, the most common being variance filtering. However, cola provides several additional features including the ability to correlate to other rows (ATC)-score which tries to identify highly correlated rows/features (similar to consensus scores for samples) with the underlying idea that given true structure in the data set, certain feature groups (with true underlying biology) are more likely to correlate or anti-correlate in their expression profile.
 
-Since version 2.0, cola supports hierarchical partitioning as an additional, meta-framework for the sub-partitioning algorithm. To this end, after identification of major clusters, resulting clusters are again sub-partitioned until an threshold (mean sillhouette score) is met. With this, smaller, sub-clusters can be identified which would otherwise
+Here we'll use the original run_all_consensus_partition_methods ensemble method to test all combinations of top feature selection and clustering methods including some additional ones that I register by hand 
+
+- ward.D2 hierarchical clustering
+- hierarchical clustering on the spearman correlation coefficient instead of euclidean distance
 
 ```{r eval = F}
 # parallellizsation doesn't work in my hands
@@ -45,12 +48,22 @@ Since version 2.0, cola supports hierarchical partitioning as an additional, met
 # filter covariates to include in the clustering analysis
 phen_data %>% 
   column_to_rownames("ID") %>%
-  dplyr::select(cohort, Age, AMLSTAT, ELN, FLT3, FAB) -> npm1_phen
+  dplyr::select(cohort, Age, AMLSTAT, ELN, FLT3, FAB, SEX, BMB, PBB, WBC, cohort) -> npm1_phen
+
 
 library(NMF)
+library(kohonen)
 
 register_NMF()
-#register_SOM()
+register_SOM()
+
+
+register_partition_methods(
+    hclust_ward = function(mat, k) cutree(hclust(as.dist(t(mat)), method = "ward.D2"), k),
+    hclust_spearcor_complete = function(mat, k) cutree(hclust(as.dist(1-cor(mat, method = "spearman")), method = "complete"), k),
+    hclust_spearcor_ward = function(mat, k) cutree(hclust(as.dist(1-cor(mat, method = "spearman")), method = "ward.D2"), k)
+)
+
 
 run_all_consensus_partition_methods(
   data = prot_npm1, 
@@ -62,13 +75,10 @@ run_all_consensus_partition_methods(
   max_k = 4,
   verbose = T) -> npm1.all_consensus_partition_k4.out
 
+cola::cola_report(npm1.all_consensus_partition_k4.out)
+
 ```
 
-### Exploration
-
-```{r}
-npm1_hierarchical_partitioning_out
-```
 
 ```{r}
 collect_classes(npm1.all_consensus_partition_k4.out, k  = 2)
@@ -79,193 +89,118 @@ collect_classes(npm1.all_consensus_partition_k4.out, k  = 2)
 suggest_best_k(npm1.all_consensus_partition_k4.out)
 ```
 
-From this, the first split (node 0) is best done by kmeans on the ATC-selected top rows which results in 3 leafs. Further splits are suggested to be done by pam and mclust.
-
-Additionally, we can use the number of signatures to guide the hierarchy split. For example, we can merge the nodes in a way that results in a minimum of 3519 signatures/split which happens to be the first ATC:kmeans split
-
 ```{r}
-collect_classes(npm1_hierarchical_partitioning_out, merge_node = merge_node_param(min_n_signatures = 3519))
+cola::dimension_reduction(npm1.all_consensus_partition_k4.out["SD:kmeans"], k = 2)
 ```
 
-```{r}
-get_signatures(npm1_hierarchical_partitioning_out, merge_node = merge_node_param(min_n_signatures = 3519))
-```
-
-Using the first split, that is ATC:kmeans with k = 3 results in 3 distinct subgroups. While the 1st and the 3rd group seem to have a very distinct pattern, the 2nd groups still seems heterogeneous. Additional splitting of the 2nd group however results in very small subgroups.
 
 ```{r}
-collect_classes(npm1_hierarchical_partitioning_out, merge_node = merge_node_param(min_n_signatures = 1837))
+cola::get_signatures(npm1.all_consensus_partition_k4.out["SD:kmeans"], k = 2) -> npm1.all_consensus_partition_k4.signature_genes
+
+npm1.all_consensus_partition_k4.signature_genes %>% 
+  mutate(uniprotid = rownames(prot_npm1)[which_row]) %>% 
+  mutate(gene = uniprotswissprot_to_hgnc_symbol[uniprotid]) %>% 
+  arrange(desc(group_diff_scaled)) %>% 
+  filter(fdr <= 0.01) -> npm1.all_consensus_partition_k4.signature_genes
 ```
+
 
 ```{r}
-get_signatures(npm1_hierarchical_partitioning_out, merge_node = merge_node_param(min_n_signatures = 1837))
+cola::functional_enrichment(npm1.all_consensus_partition_k4.out["SD:kmeans"], k = 2) -> npm1.all_consensus_partition_k4.out_enrichment
 ```
 
-We can compare the UMAP projections of the 3519 and the 1837 split
 
 ```{r}
-par(mfrow=c(1,2))
-dimension_reduction(npm1_hierarchical_partitioning_out, merge_node = merge_node_param(min_n_signatures = 1837),
-    method = "UMAP", top_value_method = "ATC", top_n = 1000, scale_rows = T)
-dimension_reduction(npm1_hierarchical_partitioning_out, merge_node = merge_node_param(min_n_signatures = 3519),
-    method = "UMAP", top_value_method = "ATC", top_n = 1000, scale_rows = T)
-```
+library(survival)
+library(survminer)
 
-While in either case cluster seperation is not perfect, the 3 way split gives a better separation of classes.
-
-```{r}
-test_to_known_factors(npm1_hierarchical_partitioning_out, merge_node = merge_node_param(min_n_signatures = 3519))
-```
-
-Furthermore we can confirm that the clustering is not biased by the batch since there's no significant association.
-
-### Classic consensus partitioning
-
-We have by using the hierarchical consensus partitioning approach found, that splitting beyond node 0 leaves the resulting sub-clusters too small. Hence we'll stick with a node 0 split. To again compare different node 0 splitting methods, we'll run the classical consensus partitioning.
-
-```{r}
-
-library(NMF)
-library(kohonen)
-
-register_SOM()
-register_NMF()
-
-register_partition_methods(
-    hclust_ward = function(mat, k) cutree(hclust(as.dist(mat), method = "ward.D2"), k),
-    hclust_spearcor_complete = function(mat, k) cutree(hclust(as.dist(1-cor(mat, method = "spearman")), method = "complete"), k),
-    hclust_spearcor_ward = function(mat, k) cutree(hclust(as.dist(1-cor(mat, method = "spearman")), method = "ward.D2"), k)
-)
-
-run_all_consensus_partition_methods(prot_npm1,
-                       top_value_method = all_top_value_methods(),
-                       partition_method = all_partition_methods(),
-                       anno = npm1_phen[colnames(prot_npm1),],
-                       # test a maximum of 6 clusters
-                       max_k = 6) -> npm1_consensus_partitioning_out
-
-npm1_consensus_partitioning_out %>% collect_plots(k = 2)
-
-get_classes(npm1.all_consensus_partition_k4.out["SD:kmeans"], k = 2) %>% 
-  rownames_to_column("ID") %>% 
-  left_join(phen_data) %>% 
-  {
-    ggsurvplot(
-      survfit(
-        Surv(OSTM, OSSTAT) ~ class,. 
-      ),., pval = T
-    )
-  }
-
-get_classes(npm1_consensus_partitioning_out["ATC:skmeans"], k = 3) %>% 
-  rownames_to_column("ID") %>% 
-  left_join(phen_data) %>% 
-  {
-    ggsurvplot(
-      survfit(
-        Surv(OSTM, OSSTAT) ~ class,. 
-      ),., risk.table = T
-    )
-  }
-
-get_signatures(npm1_consensus_partitioning_out["ATC:skmeans"], k = 3)
-
-fe_enrich <- functional_enrichment(npm1_consensus_partitioning_out["ATC:skmeans"], k = 3, id_mapping = id_mapping)
-
-fe_enrich %>% simplifyEnrichment::simplifyGOFromMultipleLists()
-```
-
-```{r eval = F}
-cola_report(npm1_consensus_partitioning_out)
-```
-
-The classical consensus partitioning confirms the combination of ATC with kmeans clustering into 3 subgroups as the method with the best metrics.
-
-```{r}
-suggest_best_k(npm1_consensus_partitioning_out) %>% 
-  as_tibble(rownames = "method", .name_repair = "unique") %>% 
-  filter(`1-PAC` == 1) %>% 
-  arrange(desc(mean_silhouette, concordance))
-```
-
-```{r}
-collect_classes(npm1_consensus_partitioning_out, k = 3)
-```
-
-```{r}
-select_partition_number(npm1_consensus_partitioning_out["ATC:kmeans"])
-```
-
-```{r}
-consensus_heatmap(npm1_consensus_partitioning_out["ATC:kmeans"], k = 3)
-```
-
-### Functional Enrichment of biological terms
-
-```{r}
-collect_plots(npm1_consensus_partitioning_out["ATC:kmeans"])
-```
-
-```{r}
-get_classes(npm1_consensus_partitioning_out["ATC:kmeans"], k = 3) %>% 
+cola::get_classes(npm1.all_consensus_partition_k4.out["SD:kmeans"], k = 2) %>% 
   as_tibble(rownames = "ID") %>% 
   left_join(phen_data) %>% 
-  mutate(mito = factor(class == 3)) %>% 
   {
     ggsurvplot(
       survfit(
-        Surv(OSTM, OSSTAT) ~ class, . 
-      ), ., pval = T, risk.table = T
+        Surv(OSTM, OSSTAT) ~ class,. 
+      ),., pval = T, title = "SD:kmeans"
     )
-  } 
+  }
+
+cola::get_classes(npm1.all_consensus_partition_k4.out["ATC:pam"], k = 2) %>% 
+  as_tibble(rownames = "ID") %>% 
+  left_join(phen_data) %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(OSTM, OSSTAT) ~ class,. 
+      ),., pval = T, title = "ATC:pam"
+    )
+  }
+```
+
+We use SD:kmeans to analyse differentially enriched proteins between the two classes
+
+```{r}
+library(limma)
+
+prot_merge[,npm1_mutated_patients] -> prot_merge_npm1
+
+model.matrix(~ 0 + as.factor(cola::get_classes(npm1.all_consensus_partition_k4.out["SD:kmeans"], k = 2)$class)) -> npm1.all_consensus_partition_k4.model_matrix
+
+colnames(npm1.all_consensus_partition_k4.model_matrix) <- c("class1", "class2")
+
+limma::makeContrasts(class2 - class1, levels = npm1.all_consensus_partition_k4.model_matrix) -> npm1.all_consensus_partition_k4.contrast
+
+lmFit(object = prot_merge_npm1, design = npm1.all_consensus_partition_k4.model_matrix) %>% 
+  contrasts.fit(contrast = npm1.all_consensus_partition_k4.contrast) %>% 
+  eBayes() -> npm1.all_consensus_partition_k4.limma_out
+
+npm1.all_consensus_partition_k4.limma_out %>% 
+  topTable(number = Inf, adjust.method = "BH", sort.by = "t", p.value = 0.01) %>% 
+  as_tibble(rownames = "uniprotid") %>% 
+  mutate(gene = uniprotswissprot_to_hgnc_symbol[uniprotid]) -> npm1.all_consensus_partition_k4.de_genes
+  
+```
+
+Overlap between signature proteins from cola::get_signatures and DE proteins as identified by limma, both fdr <1% confirms 
+
+```{r}
+ggvenn::ggvenn(data = list("limma" = npm1.all_consensus_partition_k4.de_genes$gene,
+                           "signature" = npm1.all_consensus_partition_k4.signature_genes$gene))
+```
+
+Correlation between signature genes' p value and limmas' B
+
+```{r}
+npm1.all_consensus_partition_k4.de_genes %>% 
+  dplyr::select(uniprotid, B) %>% 
+  inner_join(dplyr::select(npm1.all_consensus_partition_k4.signature_genes, uniprotid, group_diff_scaled)) %>% 
+  ggplot(aes(x=B, y = group_diff_scaled)) +
+  geom_point() + 
+  cowplot::theme_cowplot() +
+  labs(x = "limma B", y = "gene signature scaled group diff")
+  
+```
+
+
+```{r}
+npm1.all_consensus_partition_k4.de_genes %>% 
+  ggplot(aes(x=logFC, y = -log(adj.P.Val), label = gene)) +
+  geom_point() +
+  cowplot::theme_cowplot() +
+  annotate(geom = "text", x = 2.5, y = 5, label = "up in class 2", col = "red") + 
+  ggrepel::geom_text_repel() +
+  labs(caption = Sys.Date(), x = "logFC", y = "-log (adjusted p-value)")
 ```
 
 ```{r}
+library(clusterProfiler)
 
+
+sort(deframe(npm1.all_consensus_partition_k4.de_genes[,c("uniprotid", "t")]), decreasing = T)
+
+gseGO(geneList = sort(deframe(npm1.all_consensus_partition_k4.de_genes[,c("uniprotid", "t")]), decreasing = T),ont = "ALL", OrgDb = "org.Hs.eg.db",keyType = "UNIPROT", minGSSize = 50, maxGSSize = 500,pvalueCutoff = 0.01,pAdjustMethod = "BH") -> npm1.all_consensus_partition_k4.de_genes.gseGO
 ```
 
-### Enrichment
-
-The 3 way split is now used to run an enrichment analysis which is also implemented in cola. For this, we need to provide a mapping from the uniprot to entrez ids.
-
-```{r}
-head(rownames(npm1_hierarchical_partitioning_out))
-```
-
-```{r}
-
-biomaRt::getBM(attributes = c("uniprotswissprot", "entrezgene_id"), 
-               filter = c("uniprotswissprot"), 
-               mart = biomaRt::useMart("ensembl","hsapiens_gene_ensembl"), 
-               values = rownames(npm1_hierarchical_partitioning_out)) -> id_mapping
-
-id_mapping %>% deframe()  -> id_mapping
-```
-
-```{r}
-enrichment_bp_consensus_partitioning <- 
-  functional_enrichment(npm1_consensus_partitioning_out["ATC:kmeans"], k = 3, 
-                            id_mapping = id_mapping, 
-                            #ontology = "BP", 
-                            universe = as.character(unique(id_mapping)))
-
-enrichment_bp_consensus_partitioning %>% simplifyEnrichment::simplifyGOFromMultipleLists()
-```
-
-### sidekick - consensus partitioning of the entire proteome
-
-```{r}
-
-hierarchical_partition(prot_matrix_cmerge_combat,
-                       top_value_method = all_top_value_methods(),
-                       partition_method = all_partition_methods(),
-                       combination_method = expand.grid(all_top_value_methods(), all_partition_methods()),
-                       anno = phen_data %>% dplyr::select(batch, Age, AMLSTAT, ELN, FLT3) %>% as.data.frame(),
-                       cores = parallel::detectCores() - 1,
-                       # test a maximum of 6 clusters
-                       max_k = 6) -> hierarchical_consensus_partitioning_out
-
-```
 
 # M3C
 

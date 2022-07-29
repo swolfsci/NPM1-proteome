@@ -1,0 +1,230 @@
+---
+title: "20220608_proteomic_landscape_npm1_misc"
+output: github_document
+---
+
+MISC
+
+# Confirmation of the Mitocluster in the large cohort
+## Full dataset 
+
+The pre-trained xgb classifier was used to identify/predict Mito patients in the larger cohort
+
+
+```{r fig.width=6, fig.height=5}
+library(survival)
+library(survminer)
+
+
+pred_mito <- read_csv("~/Forschung/AG Oellerich/NPM1 Proteome/Florian XGB Classifier/pred_mito_0522.csv", col_names = c("ID", "pMito"))
+
+
+
+
+
+phen_data %>% 
+  left_join(pred_mito) %>% 
+  mutate(pMito = factor(pMito > 0.5, levels=c(F,T), labels=c("non-pMito","pMito"))) %>% 
+  #filter(cohort == "SAL") %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(OSTM, OSSTAT) ~ pMito, .
+      ),., 
+      pval = T, 
+      risk.table = T, 
+      palette = "nejm", 
+      legend.labs = c("non-pMiot", "pMito"),
+      size = 1.5,
+      fontsize = 7.5,
+      axes.offset = F,
+      ggtheme = theme_survminer(font.tickslab =  c(18, "plain","black"))
+    )
+  } -> p1
+
+pdf(file = "pMito_OS.pdf", width = 6, height = 5)
+p1
+dev.off()
+  
+```
+
+
+Confirm clincal phenotype of pMito cohort
+
+
+```{r}
+phen_data %>% 
+  left_join(pred_mito) %>% 
+  mutate(pMito = factor(pMito > 0.5, levels=c(F,T), labels=c("non-pMito","pMito"))) %>%
+  {
+    tableone::CreateTableOne(data = ., vars = tableone_vars, strata = "pMito", factorVars = c("CGCX", "NPM1", "FLT3"))
+  } %>% print() %>% clipr::write_clip()
+```
+
+Visualize the cox proportional hazard model including ELN and age group
+
+```{r fig.width=6, fig.height=5}
+
+phen_data %>% 
+  left_join(pred_mito) %>% 
+  mutate(pMito = factor(pMito > 0.5, levels=c(F,T), labels=c("non-pMito","pMito"))) %>% 
+  mutate(age_group = case_when(
+    Age > 50 & Age <= 65 ~ "50-65",
+    Age <= 50 ~ "<50",
+    Age > 65 ~ ">65")) %>% 
+  mutate(age_group = fct_relevel(age_group, c("50-65", "<50", ">65")),
+         ELN = fct_relevel(ELN, c("int", "fav","adv"))) %>% 
+  as.data.frame() %>%  # ggforest can't handle the tibble
+  {
+    ggforest(
+      coxph(
+        Surv(OSTM, OSSTAT) ~ ELN + pMito + age_group, .
+      ), data = .
+    )
+  } -> coxph_mito_fullcohort
+  
+  
+
+
+pdf(file = "coxph_mito_fullcohort.pdf", width = 6, height = 5)
+coxph_mito_fullcohort
+dev.off()
+```
+
+## SAL cohort only
+
+To confirm that the Mito phenotype is also a risk factor in the SAL cohort and that the survival phenotype is not only driven by the larger, AML Mito cohort
+
+```{r}
+phen_data %>% 
+  left_join(pred_mito) %>% 
+  mutate(pMito = factor(pMito > 0.5, levels=c(F,T), labels=c("non-pMito","pMito"))) %>% 
+  filter(cohort == "SAL") %>% 
+  {
+    ggsurvplot(
+      survfit(
+        Surv(OSTM, OSSTAT) ~ pMito, .
+      ),., 
+      pval = T, 
+      risk.table = T, 
+      palette = "nejm", 
+      legend.labs = c("non-pMiot", "pMito"),
+      size = 1.5,
+      fontsize = 7.5,
+      axes.offset = F,
+      ggtheme = theme_survminer(font.tickslab =  c(18, "plain","black"))
+    )
+  } -> p1
+
+pdf(file = "pMito_OS.pdf", width = 6, height = 5)
+p1
+dev.off()
+```
+
+
+
+
+```{r}
+
+npm1_fit_t_scores %>% 
+  left_join(npm1_fit_t_scores_biomart, by=c("PG.UniProtIds" = "uniprotswissprot")) %>% 
+  dplyr::select(hgnc_symbol, t) -> npm1_fit_t_scores
+
+npm1_fit_t_scores %>% deframe() -> npm1_fit_t_scores_deframe
+    
+```
+
+```{r}
+msigdbr::msigdbr(category = "H") %>% dplyr::select(gs_name, gene_symbol) %>% 
+  {
+    split(.$gene_symbol, .$gs_name)
+  } -> hallmark_gene_symbols
+
+
+msigdbr::msigdbr(category = "C5") %>% dplyr::select(gs_name, gene_symbol) %>% 
+  {
+    split(.$gene_symbol, .$gs_name)
+  } -> c5_gene_symbols
+
+```
+
+```{r}
+fgsea::fgseaMultilevel(pathways = hallmark_gene_symbols, stats = npm1_fit_t_scores_deframe, minSize = 25, maxSize = Inf) -> npm1_fit_hallmark_enrichment
+
+npm1_fit_hallmark_enrichment %>% filter(padj <= 0.05)
+```
+
+```{r}
+fgsea::fgseaMultilevel(pathways = c5_gene_symbols, stats = npm1_fit_t_scores_deframe, minSize = 25, maxSize = Inf) -> npm1_fit_c5_enrichment
+
+npm1_fit_c5_enrichment %>% filter(padj <= 0.01 & NES > 0) %>% arrange(desc(NES)) %>% 
+  head(10) %>% 
+  ggplot(aes(x = forcats::fct_reorder(pathway,NES), y = NES, size = size)) + geom_point() + coord_flip() + cowplot::theme_cowplot() -> C5_top_up
+  
+
+
+```
+
+```{r}
+
+biomaRt::getBM(attributes = c("uniprotswissprot", "hgnc_symbol"), filters = c("uniprotswissprot"), 
+               mart = biomaRt::useMart("ensembl", "hsapiens_gene_ensembl"), values = rownames(prot_matrix_cmerge_combat)) -> uniprotswissprot_to_hgnc_symbol
+
+uniprotswissprot_to_hgnc_symbol %>% deframe() -> uniprotswissprot_to_hgnc_symbol
+
+prot_matrix_cmerge_combat_hgnc <- prot_matrix_cmerge_combat
+
+rownames(prot_matrix_cmerge_combat_hgnc) <- array(uniprotswissprot_to_hgnc_symbol[rownames(prot_matrix_cmerge_combat_hgnc)])
+
+prot_matrix_cmerge_combat_hgnc[,npm1_keep] %>% 
+  GSVA::gsva(expr = ., gset.idx.list = c5_gene_symbols, kcdf = "Gaussian") -> npm1_gsva
+
+npm1_gsva[head(order(matrixStats::rowVars(npm1_gsva)), 500),] %>% 
+  t() %>% scale() %>% 
+  ComplexHeatmap::Heatmap() -> heatmap_big
+```
+
+## published gene expression signatures
+
+```{r}
+alcalay_up_in_npm1 <-c("PBX3", "HOXA9", "HOXA7", "HOXA10", "HOXA5", "ADAM17", "HOXA9", "HOXA10", "HOXB2", NA, "DF", "HOXA4", "MEIS1", "KIAA0649", "COL4A5", "SLCO3A1", "LOC285148", "HOXB5", "HOXB5", "DNAJC1", NA, "HOXB6", "BIK", "NGFRAP1", "WBP5", "FLJ10769", "HOXA6", "ZNF647", "URG4", "CPA3", "RAB13", "ARHGAP22", "DSC2", "SNX10", "HIST2H2AA")
+
+
+alcalay_down_in_npm1 <- c("PROM1", "ITM2C", "PALM2", "CD38", "TRH", "CDKN2C", NA, "CD34", NA, "C20orf27", "MAN1A1", "FLJ11127", "PALM2", "SORL1", "SORL1", "KIF17", "MAN1A1", "TSC", "IGFBP7", "TM4SF13", "USP13", "FLJ20152", "POLE", "TM4SF2", "FLJ10116", "SERPINF1", "NPR3", "STK32B", "IGFBP7", "ITM2A", "RPS6KA2", "GALC", "PGDS", NA, "CBR3", "MLLT3", "NPR3", "HOMER2", "SNX15", "HLA-DRB3", "FLJ20174", "DHRS3", "ACAT1", "APP", "FLJ14054", "APP", "MEST", "BANK1", "CDC25C", "S100B", "RRM2", "BIRC5", NA, "PRG3", "GYPC", "HERC5", "C20orf27", "ABCB1", "KIAA0830", "GALC", "ASB9", "FECH", "FECH", "POU4F1", "RAMP1", "ATP10A", "POU4F1", "XK", "MOX2", "PMAIP1", "CDKN2C", "LY9", "LHX6", "ANK1", "cig5", "C17", "IFITM1", "PIP5K1B", "GPA33", "EVL", "TRIB2", "C18orf1", "FLJ33790", "HLA-DQA1", "FKBP1B", "GYPA", "ATBF1", "INPP4B", "HGF", "MN1", "IFITM1", "HGF", "CD48", "SLC6A8", NA, "UBE2C", "ChGn", "PLK1", "CCNB2", "CCNA2", "P2RX5", "DEPDC6", "BAALC", "LOC81691", "LOC57228", NA, "GATM", "BPGM", "HUCEP11", "DCN", "BRDG1", "MLLT3", "KIAA0830", "GRM3", "SNCA", "VPREB1", "GYPA", "SNCA", "CD7", "CDC20", "IL2RG", "B4GALT6", "ICAM4", "HLA-DPA1", "FBLN5")
+
+kohlmann_up_in_npm1 <- c("RASGRP3", "HOXA2", "HOXA3", "HOXA5", "HOXA7", "HOXA9", "HOXA10", "HOXB2", "HOXB3", "HOXB4", "HOXB5", "HOXB6", "HOXB7", "HOXB9", "MEIS1", "PBX3", "TOM1L1", "JAG1", "SMC4")
+
+kohlmann_down_in_npm1 <- c("ABCB1", "BAALC", "MN1", "MLLT3", "SPARC", "GYPC", "ITM2C", "APP")
+
+verhaak_up_in_npm1 <- c("HOXA5", "HOXB6", "HOXB3", "PBX3", "HOXB5", "HOXA4", "HOXB2", "HOXA10", "MEIS1", "HOXA9", "SMC4L1", "PHKA2", "HOXA7", "ABHD2", "PDGFD", "RC3", "COL3A5", "EMR1", "HOXA6", "PLEK", "PRKAR2B", "LTBP1", "PLA2G4A", "CARD9", "ARHGAP22", "FAM38B")
+
+verhaak_down_in_npm1 <- c("CD34", "GNG7", "MOX2", "CCND2", "ITM2C", "MN1", "APP", "SPARC", "JUP", "BAALC", "LOC57228", "FLI111127", "SNRPN", "FGFR1", "PDE3B", "RRAGD", "CENTD1", "P2RY5", "MEST", "MAN1A1", "GPSM2", "ITM2A", "TRG", "PGDS")
+
+nagy <- readxl::read_excel("~/Forschung/AG Oellerich/NPM1 Proteome/Nagy_et_al_NPM1_de_genes.xlsx")
+nagy %>% 
+  filter(logFC >0) %>% pull(Gene) -> nagy_up_in_npm1
+
+nagy %>% filter(logFC <0) %>% pull(Gene) -> nagy_down_in_npm1
+
+consensus_signature_up_in_npm1 <- unique(c(alcalay_up_in_npm1, kohlmann_up_in_npm1, verhaak_up_in_npm1, nagy_up_in_npm1))
+consensus_signature_down_in_npm1 <- unique(c(alcalay_down_in_npm1, kohlmann_down_in_npm1,verhaak_down_in_npm1, nagy_down_in_npm1))
+```
+
+## NPM1 class prediction
+
+We aim to predict NPM1 class from the proteome via xgboost classifier. Furthermore, we can extract features (i.e. proteins) with high prediction power.
+
+To this end, we train a 10 fold nested-cv xgboost classifier (10 inner, 10 outer folds). Furthermore, we use restrict the proteome to surface proteins only. With this approach, it might be possible to identify novel surface proteins for NPM1 classification which can then be validated by IHC/Flow.
+
+### Build a classification vector
+
+```{r}
+# define NPM1 mut as class of interest (CoI) vs. NPM1 as non-class of interest (nCoI)
+tibble(ID = colnames(prot_merge)) %>% 
+  left_join(phen_data) %>% 
+  dplyr::select(ID, NPM1) %>% 
+  rename("class" = "NPM1") %>% 
+  mutate(class = ifelse(is.na(class), 0,class),
+         class = factor(class, levels=c(0,1), labels=c("nCoI", "CoI"))) -> vector_CoI
+
+```
